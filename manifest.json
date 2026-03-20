@@ -1,0 +1,15 @@
+{
+  "name": "シス単 SRS",
+  "short_name": "シス単SRS",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#FAFAF8",
+  "theme_color": "#FAFAF8",
+  "icons": [
+    {
+      "src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%231a1a1a'/><text x='50' y='62' font-size='40' font-weight='700' fill='white' text-anchor='middle' font-family='sans-serif'>単</text></svg>",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}

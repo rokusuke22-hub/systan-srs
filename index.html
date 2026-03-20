@@ -1,0 +1,586 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="theme-color" content="#FAFAF8">
+<title>シス単 SRS</title>
+<link rel="manifest" href="manifest.json">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body { font-family: 'Helvetica Neue', 'Hiragino Kaku Gothic ProN', sans-serif; background: #FAFAF8; color: #1a1a1a; }
+  #root { max-width: 480px; margin: 0 auto; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
+<script>
+const { useState, useEffect, useCallback, useRef } = React;
+
+const STORAGE_KEY = "systan-srs-v1";
+const today = () => new Date().toISOString().split("T")[0];
+const addDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x.toISOString().split("T")[0]; };
+const daysBetween = (a, b) => Math.round((new Date(b) - new Date(a)) / 86400000);
+
+function sm2(word, quality) {
+  const t = today();
+  const base = Object.assign({}, word, { lastReviewDate: t, lastQuality: quality });
+  if (quality === "wrong") {
+    return Object.assign(base, { repetitions: 0, interval: 1, easeFactor: Math.max(1.3, word.easeFactor - 0.2), nextReviewDate: addDays(t, 1), graduated: false });
+  }
+  if (quality === "unsure") {
+    const iv = Math.max(1, Math.round((word.interval || 1) * 1.2));
+    return Object.assign(base, { repetitions: word.repetitions + 1, interval: iv, easeFactor: Math.max(1.3, word.easeFactor - 0.15), nextReviewDate: addDays(t, iv), graduated: false });
+  }
+  let iv;
+  if (word.repetitions === 0) iv = 1;
+  else if (word.repetitions === 1) iv = 6;
+  else iv = Math.round((word.interval || 1) * word.easeFactor);
+  if (quality === "easy") iv = Math.round(iv * 1.3);
+  const ef = quality === "easy" ? word.easeFactor + 0.15 : word.easeFactor;
+  return Object.assign(base, { repetitions: word.repetitions + 1, interval: iv, easeFactor: ef, nextReviewDate: addDays(t, iv), graduated: iv >= 30 });
+}
+
+function makeWord(id, phrase, meaning) {
+  return { id: id, phrase: phrase || "", meaning: meaning || "", repetitions: 0, interval: 0, easeFactor: 2.5, nextReviewDate: today(), lastReviewDate: null, lastQuality: null, graduated: false, createdDate: today() };
+}
+
+const defaultSettings = { dailyLimit: 50, graduationDays: 30 };
+
+function loadState() {
+  try { const s = localStorage.getItem(STORAGE_KEY); if (s) return JSON.parse(s); } catch (e) {}
+  return { words: {}, settings: Object.assign({}, defaultSettings) };
+}
+
+function saveState(state) {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (e) {}
+}
+
+const btnStyles = {
+  wrong: { bg: "#FEE2E2", color: "#991B1B", border: "#FECACA" },
+  unsure: { bg: "#FEF3C7", color: "#92400E", border: "#FDE68A" },
+  correct: { bg: "#D1FAE5", color: "#065F46", border: "#A7F3D0" },
+  easy: { bg: "#DBEAFE", color: "#1E40AF", border: "#BFDBFE" },
+  disabled: { bg: "#F3F4F6", color: "#9CA3AF", border: "#E5E7EB" },
+};
+
+const S = {
+  page: { fontFamily: "'Helvetica Neue', 'Hiragino Kaku Gothic ProN', sans-serif", maxWidth: 480, margin: "0 auto", padding: "0 16px 80px", color: "#1a1a1a", background: "#FAFAF8", minHeight: "100vh" },
+  header: { display: "flex", alignItems: "center", gap: 8, padding: "16px 0 12px", borderBottom: "1px solid #E8E6E0" },
+  backBtn: { background: "none", border: "none", fontSize: 20, cursor: "pointer", padding: "4px 8px", color: "#6B6B6B" },
+  title: { fontSize: 17, fontWeight: 600, color: "#1a1a1a", margin: 0, flex: 1 },
+  card: { background: "#fff", borderRadius: 12, border: "1px solid #E8E6E0", padding: 16, marginBottom: 10 },
+  statRow: { display: "flex", justifyContent: "space-between", padding: "8px 0", borderBottom: "1px solid #F2F0EB" },
+  statLabel: { fontSize: 13, color: "#6B6B6B" },
+  statValue: { fontSize: 13, fontWeight: 600, color: "#1a1a1a" },
+  bigBtn: { width: "100%", padding: "14px 0", borderRadius: 10, border: "none", fontSize: 15, fontWeight: 600, cursor: "pointer", marginBottom: 8 },
+  primaryBtn: { background: "#1a1a1a", color: "#fff" },
+  secondaryBtn: { background: "#fff", color: "#1a1a1a", border: "1px solid #D4D2CC" },
+  input: { width: "100%", padding: "10px 12px", borderRadius: 8, border: "1px solid #D4D2CC", fontSize: 15, outline: "none", background: "#fff", boxSizing: "border-box" },
+  label: { fontSize: 12, fontWeight: 600, color: "#6B6B6B", marginBottom: 4, display: "block" },
+  msg: { fontSize: 12, padding: "6px 10px", borderRadius: 6, background: "#D1FAE5", color: "#065F46", marginTop: 8 },
+  reviewItem: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 14px", background: "#fff", borderRadius: 10, border: "1px solid #E8E6E0", marginBottom: 6, cursor: "pointer" },
+  wordNum: { fontFamily: "monospace", fontWeight: 700, fontSize: 15, color: "#1a1a1a" },
+  badge: { fontSize: 11, padding: "2px 8px", borderRadius: 10, fontWeight: 600 },
+};
+
+function e(tag, props) {
+  var args = [tag, props];
+  for (var i = 2; i < arguments.length; i++) args.push(arguments[i]);
+  return React.createElement.apply(null, args);
+}
+
+function Header(props) {
+  return e("div", { style: S.header },
+    props.onBack && e("button", { style: S.backBtn, onClick: props.onBack }, "\u2190"),
+    e("h1", { style: S.title }, props.title)
+  );
+}
+
+function App() {
+  var _s = useState(loadState), state = _s[0], setState = _s[1];
+  var _sc = useState("home"), screen = _sc[0], setScreen = _sc[1];
+  var _rq = useState([]), reviewQueue = _rq[0], setReviewQueue = _rq[1];
+  var _ri = useState(0), reviewIndex = _ri[0], setReviewIndex = _ri[1];
+  var _rv = useState(false), revealed = _rv[0], setRevealed = _rv[1];
+  var _la = useState(null), lastAction = _la[0], setLastAction = _la[1];
+  var _rd = useState(false), reviewDone = _rd[0], setReviewDone = _rd[1];
+  var _rm = useState(false), isRedoMode = _rm[0], setIsRedoMode = _rm[1];
+  var _rn = useState(""), regNum = _rn[0], setRegNum = _rn[1];
+  var _rp = useState(""), regPhrase = _rp[0], setRegPhrase = _rp[1];
+  var _rme = useState(""), regMeaning = _rme[0], setRegMeaning = _rme[1];
+  var _rmsg = useState(""), regMsg = _rmsg[0], setRegMsg = _rmsg[1];
+  var _bf = useState(""), bulkFrom = _bf[0], setBulkFrom = _bf[1];
+  var _bt = useState(""), bulkTo = _bt[0], setBulkTo = _bt[1];
+  var _be = useState(new Set()), bulkExclude = _be[0], setBulkExclude = _be[1];
+  var _bs = useState(0), bulkStep = _bs[0], setBulkStep = _bs[1];
+  var _st = useState(""), searchText = _st[0], setSearchText = _st[1];
+  var _ct = useState(""), csvText = _ct[0], setCsvText = _ct[1];
+  var _cm = useState(""), csvMsg = _cm[0], setCsvMsg = _cm[1];
+  var _im = useState(""), importMsg = _im[0], setImportMsg = _im[1];
+  var _vm = useState("list"), viewMode = _vm[0], setViewMode = _vm[1];
+  var fileRef = useRef(null);
+  var csvFileRef = useRef(null);
+
+  useEffect(function() { saveState(state); }, [state]);
+
+  var words = state.words;
+  var settings = state.settings;
+
+  var getTodayReviews = useCallback(function() {
+    var t = today();
+    var due = Object.values(words).filter(function(w) { return !w.graduated && w.nextReviewDate <= t; }).sort(function(a, b) {
+      var oa = daysBetween(a.nextReviewDate, t);
+      var ob = daysBetween(b.nextReviewDate, t);
+      if (ob !== oa) return ob - oa;
+      return a.id - b.id;
+    });
+    return due.slice(0, settings.dailyLimit);
+  }, [words, settings.dailyLimit]);
+
+  var todayReviews = getTodayReviews();
+  var totalWords = Object.keys(words).length;
+  var graduatedWords = Object.values(words).filter(function(w) { return w.graduated; }).length;
+  var overdueCount = Object.values(words).filter(function(w) { return !w.graduated && w.nextReviewDate < today(); }).length;
+  var todayReviewedWords = Object.values(words).filter(function(w) { return w.lastReviewDate === today(); }).sort(function(a, b) { return a.id - b.id; });
+
+  function startReview(redo) {
+    var q = redo ? reviewQueue.map(function(w) { return Object.assign({}, words[w.id], { _done: false, _result: null }); }) : todayReviews.map(function(w) { return Object.assign({}, w, { _done: false, _result: null }); });
+    if (q.length === 0) return;
+    setReviewQueue(q); setReviewIndex(0); setRevealed(false); setReviewDone(false); setLastAction(null); setIsRedoMode(!!redo); setViewMode("list"); setScreen("review");
+  }
+
+  function startRedoFromHome() {
+    var q = todayReviewedWords.map(function(w) { return Object.assign({}, w, { _done: false, _result: null }); });
+    if (q.length === 0) return;
+    setReviewQueue(q); setReviewIndex(0); setRevealed(false); setReviewDone(false); setLastAction(null); setIsRedoMode(true); setViewMode("list"); setScreen("review");
+  }
+
+  function handleJudge(quality) {
+    var current = reviewQueue[reviewIndex];
+    if (!current) return;
+    var updated = sm2(words[current.id], quality);
+    if (isRedoMode && quality !== "wrong") {
+      setState(function(prev) { var w = Object.assign({}, prev.words); w[current.id] = Object.assign({}, w[current.id], { lastQuality: quality }); return Object.assign({}, prev, { words: w }); });
+    } else {
+      setState(function(prev) { var w = Object.assign({}, prev.words); w[current.id] = updated; return Object.assign({}, prev, { words: w }); });
+    }
+    var newQ = reviewQueue.slice();
+    newQ[reviewIndex] = Object.assign({}, newQ[reviewIndex], { _done: true, _result: quality });
+    setReviewQueue(newQ);
+    setLastAction({ index: reviewIndex, prevWord: words[current.id], quality: quality });
+    if (viewMode === "card") {
+      var nextUndone = newQ.findIndex(function(w, i) { return i > reviewIndex && !w._done; });
+      if (nextUndone === -1) {
+        var anyUndone = newQ.findIndex(function(w, i) { return i !== reviewIndex && !w._done; });
+        if (anyUndone === -1) setReviewDone(true);
+        else { setReviewIndex(anyUndone); setRevealed(false); }
+      } else { setReviewIndex(nextUndone); setRevealed(false); }
+    } else {
+      setRevealed(false);
+      var allDone = newQ.every(function(w, i) { return i === reviewIndex ? true : w._done; });
+      if (allDone) setReviewDone(true);
+    }
+  }
+
+  function handleUndo() {
+    if (!lastAction) return;
+    var index = lastAction.index, prevWord = lastAction.prevWord;
+    if (!isRedoMode) {
+      setState(function(prev) { var w = Object.assign({}, prev.words); w[prevWord.id] = prevWord; return Object.assign({}, prev, { words: w }); });
+    }
+    var newQ = reviewQueue.slice();
+    newQ[index] = Object.assign({}, newQ[index], { _done: false, _result: null });
+    setReviewQueue(newQ); setReviewIndex(index); setRevealed(false); setReviewDone(false); setLastAction(null);
+  }
+
+  function registerWord(id, phrase, meaning) {
+    var n = parseInt(id);
+    if (isNaN(n) || n < 1 || n > 2027) return "\u756a\u53f7\u306f1\u301c2027\u3067\u5165\u529b";
+    if (words[n]) {
+      setState(function(prev) { var w = Object.assign({}, prev.words); w[n] = Object.assign({}, w[n], { phrase: phrase || w[n].phrase, meaning: meaning || w[n].meaning, repetitions: 0, interval: 1, nextReviewDate: addDays(today(), 1) }); return Object.assign({}, prev, { words: w }); });
+      return "#" + n + " \u3092\u518d\u767b\u9332\uff08\u30b9\u30b1\u30b8\u30e5\u30fc\u30eb\u30ea\u30bb\u30c3\u30c8\uff09";
+    }
+    setState(function(prev) { var w = Object.assign({}, prev.words); w[n] = makeWord(n, phrase, meaning); return Object.assign({}, prev, { words: w }); });
+    return "#" + n + " \u3092\u767b\u9332";
+  }
+
+  function deleteWord(id) {
+    setState(function(prev) { var w = Object.assign({}, prev.words); delete w[id]; return Object.assign({}, prev, { words: w }); });
+  }
+
+  function importCSV(text) {
+    var lines = text.trim().split("\n");
+    var count = 0;
+    var updated = Object.assign({}, words);
+    for (var i = 0; i < lines.length; i++) {
+      var parts = lines[i].split(",").map(function(s) { return s.trim().replace(/^"|"$/g, ""); });
+      if (parts.length < 3) continue;
+      var num = parseInt(parts[0]);
+      if (isNaN(num) || num < 1 || num > 2027) continue;
+      if (updated[num]) {
+        updated[num] = Object.assign({}, updated[num], { phrase: parts[1], meaning: parts[2] });
+      } else {
+        updated[num] = makeWord(num, parts[1], parts[2]);
+      }
+      count++;
+    }
+    setState(function(prev) { return Object.assign({}, prev, { words: updated }); });
+    return count + "\u8a9e\u306e\u30c7\u30fc\u30bf\u3092\u53d6\u308a\u8fbc\u307f\u307e\u3057\u305f";
+  }
+
+  function exportJSON() {
+    var blob = new Blob([JSON.stringify(state, null, 2)], { type: "application/json" });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement("a"); a.href = url; a.download = "systan-srs-" + today() + ".json"; a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function importJSON(text) {
+    try { var d = JSON.parse(text); if (d.words && d.settings) { setState(d); return "\u30c7\u30fc\u30bf\u3092\u5fa9\u5143\u3057\u307e\u3057\u305f"; } return "\u5f62\u5f0f\u304c\u6b63\u3057\u304f\u3042\u308a\u307e\u305b\u3093"; } catch(ex) { return "JSON\u306e\u89e3\u6790\u306b\u5931\u6557"; }
+  }
+
+  var todayCount = todayReviews.length;
+
+  // ===== HOME =====
+  if (screen === "home") {
+    return e("div", { style: S.page },
+      e("div", { style: { padding: "20px 0 16px", textAlign: "center" } },
+        e("div", { style: { fontSize: 11, fontWeight: 600, letterSpacing: 2, color: "#999", textTransform: "uppercase" } }, "\u30b7\u30b9\u5358 SRS"),
+        e("div", { style: { fontSize: 13, color: "#6B6B6B", marginTop: 4 } }, today())
+      ),
+      e("div", { style: Object.assign({}, S.card, { textAlign: "center", padding: 24 }) },
+        e("div", { style: { fontSize: 42, fontWeight: 700, color: todayCount > 0 ? "#1a1a1a" : "#065F46" } }, todayCount),
+        e("div", { style: { fontSize: 13, color: "#6B6B6B", marginTop: 4 } }, "\u4eca\u65e5\u306e\u5fa9\u7fd2"),
+        todayCount > 0 && e("button", { style: Object.assign({}, S.bigBtn, S.primaryBtn, { marginTop: 16, marginBottom: 0 }), onClick: function() { startReview(false); } }, "\u5fa9\u7fd2\u3092\u306f\u3058\u3081\u308b"),
+        todayCount === 0 && totalWords > 0 && e("div", { style: { fontSize: 13, color: "#065F46", marginTop: 12 } }, "\u4eca\u65e5\u306e\u5fa9\u7fd2\u306f\u3042\u308a\u307e\u305b\u3093"),
+        todayCount === 0 && todayReviewedWords.length > 0 && e("button", { style: Object.assign({}, S.bigBtn, S.secondaryBtn, { marginTop: 12, marginBottom: 0 }), onClick: startRedoFromHome },
+          "\u4eca\u65e5\u306e" + todayReviewedWords.length + "\u8a9e\u3092\u3082\u3046\u4e00\u5ea6\u3084\u308b",
+          e("span", { style: { fontSize: 11, color: "#999", display: "block", fontWeight: 400 } }, "\u203b\u300c\u00d7 \u308f\u304b\u3089\u306a\u3044\u300d\u306e\u307f\u8a18\u9332\u3055\u308c\u307e\u3059")
+        )
+      ),
+      e("div", { style: S.card },
+        e("div", { style: S.statRow }, e("span", { style: S.statLabel }, "\u767b\u9332\u8a9e\u6570"), e("span", { style: S.statValue }, totalWords)),
+        e("div", { style: S.statRow }, e("span", { style: S.statLabel }, "\u5352\u696d\u6e08\u307f"), e("span", { style: S.statValue }, graduatedWords)),
+        e("div", { style: S.statRow }, e("span", { style: S.statLabel }, "\u5b66\u7fd2\u4e2d"), e("span", { style: S.statValue }, totalWords - graduatedWords)),
+        e("div", { style: Object.assign({}, S.statRow, { borderBottom: "none" }) }, e("span", { style: S.statLabel }, "\u671f\u9650\u8d85\u904e"), e("span", { style: Object.assign({}, S.statValue, { color: overdueCount > 0 ? "#991B1B" : "#065F46" }) }, overdueCount))
+      ),
+      e("button", { style: Object.assign({}, S.bigBtn, S.primaryBtn), onClick: function() { setScreen("register"); } }, "\u8a9e\u3092\u767b\u9332\u3059\u308b"),
+      e("button", { style: Object.assign({}, S.bigBtn, S.secondaryBtn), onClick: function() { setScreen("register-bulk"); } }, "\u307e\u3068\u3081\u3066\u767b\u9332\uff08\u7bc4\u56f2\u6307\u5b9a\uff09"),
+      e("button", { style: Object.assign({}, S.bigBtn, S.secondaryBtn), onClick: function() { setScreen("words"); } }, "\u767b\u9332\u8a9e\u4e00\u89a7\uff08" + totalWords + "\u8a9e\uff09"),
+      e("button", { style: Object.assign({}, S.bigBtn, S.secondaryBtn), onClick: function() { setScreen("csv"); } }, "CSV\u53d6\u308a\u8fbc\u307f"),
+      e("button", { style: Object.assign({}, S.bigBtn, S.secondaryBtn), onClick: function() { setScreen("data"); } }, "\u30c7\u30fc\u30bf\u7ba1\u7406"),
+      e("button", { style: Object.assign({}, S.bigBtn, S.secondaryBtn), onClick: function() { setScreen("settings"); } }, "\u8a2d\u5b9a")
+    );
+  }
+
+  // ===== REGISTER SINGLE =====
+  if (screen === "register") {
+    var hasPhrase = regPhrase.trim().length > 0;
+    var hasMeaning = regMeaning.trim().length > 0;
+    var contentIncomplete = (hasPhrase && !hasMeaning) || (!hasPhrase && hasMeaning);
+    var numValid = !isNaN(parseInt(regNum)) && parseInt(regNum) >= 1 && parseInt(regNum) <= 2027;
+    var canRegister = numValid && !contentIncomplete;
+    return e("div", { style: S.page },
+      e(Header, { title: "\u8a9e\u3092\u767b\u9332", onBack: function() { setScreen("home"); setRegMsg(""); setRegNum(""); setRegPhrase(""); setRegMeaning(""); } }),
+      e("div", { style: Object.assign({}, S.card, { marginTop: 12 }) },
+        e("div", { style: { marginBottom: 12 } }, e("label", { style: S.label }, "\u8a9e\u756a\u53f7\uff081\u301c2027\uff09"), e("input", { style: S.input, type: "number", inputMode: "numeric", value: regNum, onChange: function(ev) { setRegNum(ev.target.value); }, placeholder: "\u4f8b\uff1a215" })),
+        e("div", { style: { marginBottom: 12 } }, e("label", { style: S.label }, "\u30df\u30cb\u30de\u30eb\u30d5\u30ec\u30fc\u30ba"), e("input", { style: S.input, value: regPhrase, onChange: function(ev) { setRegPhrase(ev.target.value); }, placeholder: "\u4f8b\uff1acommit a crime" })),
+        e("div", { style: { marginBottom: 12 } }, e("label", { style: S.label }, "\u65e5\u672c\u8a9e\u8a33"), e("input", { style: S.input, value: regMeaning, onChange: function(ev) { setRegMeaning(ev.target.value); }, placeholder: "\u4f8b\uff1a\u7f6a\u3092\u72af\u3059" })),
+        contentIncomplete && e("div", { style: { fontSize: 12, color: "#92400E", background: "#FEF3C7", padding: "6px 10px", borderRadius: 6, marginBottom: 8 } }, "\u30d5\u30ec\u30fc\u30ba\u3068\u8a33\u306f\u4e21\u65b9\u5165\u529b\u3057\u3066\u304f\u3060\u3055\u3044\uff08\u756a\u53f7\u3060\u3051\u306e\u767b\u9332\u3082OK\uff09"),
+        e("button", { style: Object.assign({}, S.bigBtn, S.primaryBtn, { opacity: canRegister ? 1 : 0.4, cursor: canRegister ? "pointer" : "default" }), disabled: !canRegister, onClick: function() {
+          if (!canRegister) return;
+          var msg = registerWord(regNum, regPhrase, regMeaning);
+          setRegMsg(msg);
+          if (msg.indexOf("\u756a\u53f7\u306f") === -1) { setRegNum(""); setRegPhrase(""); setRegMeaning(""); }
+        } }, "\u767b\u9332"),
+        regMsg && e("div", { style: Object.assign({}, S.msg, { background: regMsg.indexOf("\u756a\u53f7\u306f") !== -1 ? "#FEE2E2" : "#D1FAE5", color: regMsg.indexOf("\u756a\u53f7\u306f") !== -1 ? "#991B1B" : "#065F46" }) }, regMsg)
+      )
+    );
+  }
+
+  // ===== REGISTER BULK =====
+  if (screen === "register-bulk") {
+    var rangeNums = [];
+    var f = parseInt(bulkFrom), t2 = parseInt(bulkTo);
+    if (!isNaN(f) && !isNaN(t2) && f >= 1 && t2 <= 2027 && f <= t2) {
+      for (var i = f; i <= t2; i++) rangeNums.push(i);
+    }
+    var toRegister = rangeNums.filter(function(n) { return !bulkExclude.has(n); });
+
+    if (bulkStep === 0) {
+      return e("div", { style: S.page },
+        e(Header, { title: "\u307e\u3068\u3081\u3066\u767b\u9332", onBack: function() { setScreen("home"); setBulkFrom(""); setBulkTo(""); setBulkExclude(new Set()); setBulkStep(0); } }),
+        e("div", { style: Object.assign({}, S.card, { marginTop: 12 }) },
+          e("div", { style: { fontSize: 13, color: "#6B6B6B", marginBottom: 12, lineHeight: 1.7 } }, "\u7bc4\u56f2\u3092\u6307\u5b9a \u2192 \u300c\u308f\u304b\u3063\u305f\u8a9e\u300d\u3092\u9664\u5916 \u2192 \u6b8b\u308a\u3092\u4e00\u62ec\u767b\u9332"),
+          e("div", { style: { display: "flex", gap: 8, marginBottom: 12 } },
+            e("div", { style: { flex: 1 } }, e("label", { style: S.label }, "\u958b\u59cb\u756a\u53f7"), e("input", { style: S.input, type: "number", inputMode: "numeric", value: bulkFrom, onChange: function(ev) { setBulkFrom(ev.target.value); }, placeholder: "1" })),
+            e("div", { style: { flex: 1 } }, e("label", { style: S.label }, "\u7d42\u4e86\u756a\u53f7"), e("input", { style: S.input, type: "number", inputMode: "numeric", value: bulkTo, onChange: function(ev) { setBulkTo(ev.target.value); }, placeholder: "150" }))
+          ),
+          rangeNums.length > 0 && e("button", { style: Object.assign({}, S.bigBtn, S.primaryBtn), onClick: function() { setBulkExclude(new Set()); setBulkStep(1); } }, "\u6b21\u3078\uff1a" + rangeNums.length + "\u8a9e\u304b\u3089\u9664\u5916\u3092\u9078\u629e")
+        )
+      );
+    }
+
+    return e("div", { style: S.page },
+      e(Header, { title: "\u9664\u5916\u3092\u9078\u629e\uff08" + bulkExclude.size + "\u8a9e\u9664\u5916\u4e2d\uff09", onBack: function() { setBulkStep(0); } }),
+      e("div", { style: { fontSize: 12, color: "#6B6B6B", padding: "8px 0", lineHeight: 1.6 } },
+        "\u300c\u308f\u304b\u3063\u305f\u8a9e\u300d\u3092\u30bf\u30c3\u30d7\u3057\u3066\u9664\u5916\u3002\u6b8b\u308a",
+        e("span", { style: { fontWeight: 700 } }, " " + toRegister.length + "\u8a9e "),
+        "\u3092\u767b\u9332\u3002"
+      ),
+      e("div", { style: { display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 12 } },
+        rangeNums.map(function(n) {
+          var excluded = bulkExclude.has(n);
+          var existing = !!words[n];
+          return e("button", { key: n, onClick: function() {
+            var s = new Set(bulkExclude);
+            excluded ? s.delete(n) : s.add(n);
+            setBulkExclude(s);
+          }, style: {
+            padding: "6px 10px", borderRadius: 6, fontSize: 12, fontFamily: "monospace", fontWeight: 600, cursor: "pointer",
+            border: existing ? "2px solid #3B82F6" : "1px solid #D4D2CC",
+            background: excluded ? "#F3F4F6" : "#fff",
+            color: excluded ? "#9CA3AF" : "#1a1a1a",
+            textDecoration: excluded ? "line-through" : "none",
+          } }, n);
+        })
+      ),
+      e("button", { style: Object.assign({}, S.bigBtn, S.primaryBtn), onClick: function() {
+        var updated = Object.assign({}, words);
+        for (var i = 0; i < toRegister.length; i++) {
+          var n = toRegister[i];
+          if (updated[n]) {
+            updated[n] = Object.assign({}, updated[n], { repetitions: 0, interval: 1, nextReviewDate: addDays(today(), 1) });
+          } else {
+            updated[n] = makeWord(n, "", "");
+          }
+        }
+        setState(function(prev) { return Object.assign({}, prev, { words: updated }); });
+        setBulkStep(0); setBulkFrom(""); setBulkTo(""); setBulkExclude(new Set());
+        setScreen("home");
+      } }, toRegister.length + "\u8a9e\u3092\u4e00\u62ec\u767b\u9332")
+    );
+  }
+
+  // ===== REVIEW =====
+  if (screen === "review") {
+    var doneCount = reviewQueue.filter(function(w) { return w._done; }).length;
+    var totalQ = reviewQueue.length;
+    var current = reviewQueue[reviewIndex];
+
+    if (reviewDone) {
+      var wrongCount = reviewQueue.filter(function(w) { return w._result === "wrong"; }).length;
+      var unsureCount = reviewQueue.filter(function(w) { return w._result === "unsure"; }).length;
+      var correctCount = reviewQueue.filter(function(w) { return w._result === "correct"; }).length;
+      var easyCount = reviewQueue.filter(function(w) { return w._result === "easy"; }).length;
+      var resultBadges = [];
+      if (wrongCount > 0) resultBadges.push(e("span", { key: "w", style: Object.assign({}, S.badge, { background: btnStyles.wrong.bg, color: btnStyles.wrong.color }) }, "\u00d7 " + wrongCount));
+      if (unsureCount > 0) resultBadges.push(e("span", { key: "u", style: Object.assign({}, S.badge, { background: btnStyles.unsure.bg, color: btnStyles.unsure.color }) }, "\u25b3 " + unsureCount));
+      if (correctCount > 0) resultBadges.push(e("span", { key: "c", style: Object.assign({}, S.badge, { background: btnStyles.correct.bg, color: btnStyles.correct.color }) }, "\u25cb " + correctCount));
+      if (easyCount > 0) resultBadges.push(e("span", { key: "e", style: Object.assign({}, S.badge, { background: btnStyles.easy.bg, color: btnStyles.easy.color }) }, "\u25ce " + easyCount));
+
+      return e("div", { style: S.page },
+        e(Header, { title: isRedoMode ? "\u3082\u3046\u4e00\u5ea6 \u5b8c\u4e86" : "\u5fa9\u7fd2\u5b8c\u4e86", onBack: function() { setScreen("home"); } }),
+        e("div", { style: Object.assign({}, S.card, { textAlign: "center", padding: 24, marginTop: 12 }) },
+          e("div", { style: { fontSize: 36, marginBottom: 4 } }, "\u2713"),
+          e("div", { style: { fontSize: 15, fontWeight: 600, marginBottom: 16 } }, totalQ + "\u8a9e \u5b8c\u4e86"),
+          e("div", { style: { display: "flex", justifyContent: "center", gap: 12, flexWrap: "wrap" } }, resultBadges)
+        ),
+        e("button", { style: Object.assign({}, S.bigBtn, S.secondaryBtn), onClick: function() { startReview(true); } },
+          "\u3082\u3046\u4e00\u5ea6\u3084\u308b",
+          e("span", { style: { fontSize: 11, color: "#999", display: "block", fontWeight: 400 } }, "\u203b\u300c\u00d7 \u308f\u304b\u3089\u306a\u3044\u300d\u306e\u307f\u8a18\u9332\u3055\u308c\u307e\u3059")
+        ),
+        e("button", { style: Object.assign({}, S.bigBtn, S.primaryBtn), onClick: function() { setScreen("home"); } }, "\u30db\u30fc\u30e0\u306b\u623b\u308b")
+      );
+    }
+
+    // LIST VIEW
+    if (viewMode === "list") {
+      var resultColors = { wrong: btnStyles.wrong, unsure: btnStyles.unsure, correct: btnStyles.correct, easy: btnStyles.easy };
+      var resultSymbols = { wrong: "\u00d7", unsure: "\u25b3", correct: "\u25cb", easy: "\u25ce" };
+      return e("div", { style: S.page },
+        e(Header, { title: "\u4eca\u65e5\u306e\u5fa9\u7fd2\uff08" + doneCount + "/" + totalQ + "\uff09", onBack: function() { setScreen("home"); } }),
+        e("div", { style: { display: "flex", gap: 8, padding: "8px 0" } },
+          e("button", { style: Object.assign({}, S.bigBtn, S.secondaryBtn, { flex: 1, marginBottom: 0, fontSize: 12, padding: "8px 0" }), onClick: function() {
+            var first = reviewQueue.findIndex(function(w) { return !w._done; });
+            if (first !== -1) { setReviewIndex(first); setViewMode("card"); setRevealed(false); }
+          } }, "\u9023\u7d9a\u30e2\u30fc\u30c9\u3067\u958b\u59cb")
+        ),
+        lastAction && e("button", { style: { fontSize: 12, color: "#6B6B6B", background: "none", border: "none", padding: "4px 0", cursor: "pointer", textDecoration: "underline" }, onClick: handleUndo }, "\u21a9 \u76f4\u524d\u306e\u5224\u5b9a\u3092\u53d6\u308a\u6d88\u3059"),
+        e("div", { style: { marginTop: 8 } },
+          reviewQueue.map(function(w, i) {
+            var word = words[w.id] || w;
+            var hasContent = word.phrase && word.meaning;
+            return e("div", { key: w.id, style: Object.assign({}, S.reviewItem, { opacity: w._done ? 0.6 : 1 }), onClick: function() {
+              if (!w._done) { setReviewIndex(i); setViewMode("card"); setRevealed(false); }
+            } },
+              e("div", null,
+                e("span", { style: S.wordNum }, "#" + w.id),
+                hasContent && e("span", { style: { fontSize: 12, color: "#6B6B6B", marginLeft: 8 } }, word.phrase)
+              ),
+              w._done ? e("span", { style: Object.assign({}, S.badge, { background: (resultColors[w._result] || {}).bg, color: (resultColors[w._result] || {}).color }) }, resultSymbols[w._result] || "") : e("span", { style: Object.assign({}, S.badge, { background: "#F2F0EB", color: "#999" }) }, "\u672a\u51e6\u7406")
+            );
+          })
+        )
+      );
+    }
+
+    // CARD VIEW
+    var word = words[current && current.id] || current;
+    var hasContent = word && word.phrase && word.meaning;
+    var judgeBtns = [
+      { key: "wrong", label: "\u00d7\n\u308f\u304b\u3089\u306a\u3044", s: btnStyles.wrong },
+      { key: "unsure", label: "\u25b3\n\u3046\u308d\u899a\u3048", s: btnStyles.unsure },
+      { key: "correct", label: "\u25cb\n\u308f\u304b\u3063\u305f", s: btnStyles.correct },
+      { key: "easy", label: "\u25ce\n\u4f59\u88d5", s: btnStyles.easy },
+    ];
+    var enabled = hasContent ? revealed : true;
+    return e("div", { style: S.page },
+      e("div", { style: { display: "flex", alignItems: "center", padding: "12px 0", borderBottom: "1px solid #E8E6E0" } },
+        e("button", { style: S.backBtn, onClick: function() { setViewMode("list"); } }, "\u2190"),
+        e("span", { style: { fontSize: 13, color: "#6B6B6B", flex: 1 } }, (doneCount + 1) + " / " + totalQ + "\u8a9e"),
+        lastAction && e("button", { style: { fontSize: 12, color: "#6B6B6B", background: "none", border: "none", cursor: "pointer" }, onClick: handleUndo }, "\u21a9 \u623b\u3059")
+      ),
+      e("div", { style: { marginTop: 20, textAlign: "center" } },
+        e("div", { onClick: function() { if (!revealed) setRevealed(true); }, style: Object.assign({}, S.card, { padding: 32, cursor: revealed ? "default" : "pointer", minHeight: 180, display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center", boxShadow: !revealed ? "0 2px 8px rgba(0,0,0,0.06)" : "none" }) },
+          e("div", { style: { fontSize: 14, fontFamily: "monospace", color: "#999", marginBottom: 8 } }, "#" + (word && word.id)),
+          hasContent ? [
+            e("div", { key: "ph", style: { fontSize: 22, fontWeight: 600, color: "#1a1a1a", marginBottom: 16, lineHeight: 1.4 } }, word.phrase),
+            revealed ? e("div", { key: "ans", style: { fontSize: 18, fontWeight: 600, color: "#1E40AF", padding: "8px 16px", background: "#EFF6FF", borderRadius: 8 } }, word.meaning) : e("div", { key: "hide", style: { padding: "10px 16px", border: "1px dashed #D4D2CC", borderRadius: 8, color: "#999", fontSize: 13 } }, "\u30bf\u30c3\u30d7\u3067\u8a33\u3092\u8868\u793a")
+          ] : [
+            e("div", { key: "num", style: { fontSize: 32, fontWeight: 700, color: "#1a1a1a", marginBottom: 12 } }, "#" + (word && word.id)),
+            e("div", { key: "hint", style: { fontSize: 13, color: "#999" } }, "\u30b7\u30b9\u5358\u3067\u78ba\u8a8d\u3057\u3066\u304f\u3060\u3055\u3044")
+          ]
+        )
+      ),
+      e("div", { style: { display: "flex", gap: 8, marginTop: 20 } },
+        judgeBtns.map(function(b) {
+          var st = enabled ? b.s : btnStyles.disabled;
+          return e("button", { key: b.key, disabled: !enabled, onClick: function() { handleJudge(b.key); }, style: {
+            flex: 1, padding: "14px 4px", borderRadius: 10, border: "1px solid " + st.border, background: st.bg, color: st.color,
+            fontSize: 13, fontWeight: 600, cursor: enabled ? "pointer" : "default", whiteSpace: "pre-line", lineHeight: 1.4, opacity: enabled ? 1 : 0.5,
+          } }, b.label);
+        })
+      ),
+      isRedoMode && e("div", { style: { fontSize: 11, color: "#999", textAlign: "center", marginTop: 8 } }, "\u203b\u300c\u00d7 \u308f\u304b\u3089\u306a\u3044\u300d\u306e\u307f\u8a18\u9332\u3055\u308c\u307e\u3059")
+    );
+  }
+
+  // ===== WORD LIST =====
+  if (screen === "words") {
+    var sorted = Object.values(words).filter(function(w) {
+      if (!searchText) return true;
+      var s = searchText.toLowerCase();
+      return String(w.id).indexOf(s) !== -1 || (w.phrase && w.phrase.toLowerCase().indexOf(s) !== -1) || (w.meaning && w.meaning.indexOf(s) !== -1);
+    }).sort(function(a, b) { return a.id - b.id; });
+    var qMap = { wrong: { label: "\u00d7", bg: "#FEE2E2", color: "#991B1B" }, unsure: { label: "\u25b3", bg: "#FEF3C7", color: "#92400E" }, correct: { label: "\u25cb", bg: "#D1FAE5", color: "#065F46" }, easy: { label: "\u25ce", bg: "#DBEAFE", color: "#1E40AF" } };
+
+    return e("div", { style: S.page },
+      e(Header, { title: "\u767b\u9332\u8a9e\u4e00\u89a7\uff08" + totalWords + "\u8a9e\uff09", onBack: function() { setScreen("home"); setSearchText(""); } }),
+      e("input", { style: Object.assign({}, S.input, { marginTop: 8, marginBottom: 8 }), placeholder: "\u756a\u53f7\u30fb\u30d5\u30ec\u30fc\u30ba\u30fb\u8a33\u3067\u691c\u7d22", value: searchText, onChange: function(ev) { setSearchText(ev.target.value); } }),
+      e("div", null,
+        sorted.map(function(w) {
+          var qStyle = w.lastQuality && qMap[w.lastQuality] ? qMap[w.lastQuality] : null;
+          var statusBadge = w.graduated ? { label: "\u5352\u696d", bg: "#D1FAE5", color: "#065F46" } : qStyle ? qStyle : !w.lastReviewDate ? { label: "\u65b0\u898f", bg: "#EFF6FF", color: "#1E40AF" } : { label: "\u2014", bg: "#F2F0EB", color: "#999" };
+          return e("div", { key: w.id, style: Object.assign({}, S.reviewItem, { flexDirection: "column", alignItems: "stretch", gap: 4 }) },
+            e("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center" } },
+              e("div", { style: { display: "flex", alignItems: "center", gap: 6, flex: 1, minWidth: 0 } },
+                e("span", { style: S.wordNum }, "#" + w.id),
+                e("span", { style: Object.assign({}, S.badge, { background: statusBadge.bg, color: statusBadge.color, flexShrink: 0 }) }, statusBadge.label),
+                w.phrase && e("span", { style: { fontSize: 12, color: "#6B6B6B", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, w.phrase)
+              ),
+              e("button", { onClick: function() { deleteWord(w.id); }, style: { background: "none", border: "none", color: "#DC2626", fontSize: 12, cursor: "pointer", flexShrink: 0, marginLeft: 8 } }, "\u524a\u9664")
+            ),
+            e("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 11, color: "#999" } },
+              e("span", null, w.meaning || "\uff08\u8a33\u306a\u3057\uff09"),
+              e("span", null, "\u9593\u9694" + w.interval + "\u65e5 / \u6b21\u56de: " + w.nextReviewDate)
+            )
+          );
+        }),
+        sorted.length === 0 && e("div", { style: { textAlign: "center", color: "#999", padding: 32, fontSize: 13 } }, totalWords === 0 ? "\u8a9e\u304c\u767b\u9332\u3055\u308c\u3066\u3044\u307e\u305b\u3093" : "\u8a72\u5f53\u306a\u3057")
+      )
+    );
+  }
+
+  // ===== CSV IMPORT =====
+  if (screen === "csv") {
+    return e("div", { style: S.page },
+      e(Header, { title: "CSV\u53d6\u308a\u8fbc\u307f", onBack: function() { setScreen("home"); setCsvText(""); setCsvMsg(""); } }),
+      e("div", { style: Object.assign({}, S.card, { marginTop: 12 }) },
+        e("div", { style: { fontSize: 13, color: "#6B6B6B", lineHeight: 1.7, marginBottom: 12 } },
+          "\u5f62\u5f0f\uff1a", e("code", { style: { background: "#F2F0EB", padding: "1px 6px", borderRadius: 4, fontSize: 12 } }, "\u756a\u53f7,\u30d5\u30ec\u30fc\u30ba,\u8a33"), e("br"),
+          "\u4f8b\uff1a", e("code", { style: { background: "#F2F0EB", padding: "1px 6px", borderRadius: 4, fontSize: 12 } }, "215,commit a crime,\u7f6a\u3092\u72af\u3059")
+        ),
+        e("input", { type: "file", ref: csvFileRef, accept: ".csv,.txt", style: { display: "none" }, onChange: function(ev) {
+          var file = ev.target.files && ev.target.files[0];
+          if (file) { var r = new FileReader(); r.onload = function() { setCsvText(r.result); }; r.readAsText(file); }
+        } }),
+        e("button", { style: Object.assign({}, S.bigBtn, S.secondaryBtn), onClick: function() { csvFileRef.current && csvFileRef.current.click(); } }, "\u30d5\u30a1\u30a4\u30eb\u3092\u9078\u629e"),
+        e("textarea", { style: Object.assign({}, S.input, { height: 120, fontFamily: "monospace", fontSize: 12, marginTop: 8, resize: "vertical" }), placeholder: "\u307e\u305f\u306f\u3053\u3053\u306b\u8cbc\u308a\u4ed8\u3051", value: csvText, onChange: function(ev) { setCsvText(ev.target.value); } }),
+        e("button", { style: Object.assign({}, S.bigBtn, S.primaryBtn, { marginTop: 8 }), onClick: function() { setCsvMsg(importCSV(csvText)); } }, "\u53d6\u308a\u8fbc\u3080"),
+        csvMsg && e("div", { style: S.msg }, csvMsg)
+      )
+    );
+  }
+
+  // ===== DATA MANAGEMENT =====
+  if (screen === "data") {
+    return e("div", { style: S.page },
+      e(Header, { title: "\u30c7\u30fc\u30bf\u7ba1\u7406", onBack: function() { setScreen("home"); setImportMsg(""); } }),
+      e("div", { style: Object.assign({}, S.card, { marginTop: 12 }) },
+        e("div", { style: { fontSize: 14, fontWeight: 600, marginBottom: 8 } }, "\u30d0\u30c3\u30af\u30a2\u30c3\u30d7\uff08\u30a8\u30af\u30b9\u30dd\u30fc\u30c8\uff09"),
+        e("div", { style: { fontSize: 12, color: "#6B6B6B", marginBottom: 8, lineHeight: 1.6 } }, "\u5168\u30c7\u30fc\u30bf\u3092JSON\u30d5\u30a1\u30a4\u30eb\u3067\u4fdd\u5b58\u3057\u307e\u3059\u3002"),
+        e("button", { style: Object.assign({}, S.bigBtn, S.primaryBtn), onClick: exportJSON }, "JSON\u3092\u30c0\u30a6\u30f3\u30ed\u30fc\u30c9")
+      ),
+      e("div", { style: S.card },
+        e("div", { style: { fontSize: 14, fontWeight: 600, marginBottom: 8 } }, "\u5fa9\u5143\uff08\u30a4\u30f3\u30dd\u30fc\u30c8\uff09"),
+        e("input", { type: "file", ref: fileRef, accept: ".json", style: { display: "none" }, onChange: function(ev) {
+          var file = ev.target.files && ev.target.files[0];
+          if (file) { var r = new FileReader(); r.onload = function() { setImportMsg(importJSON(r.result)); }; r.readAsText(file); }
+        } }),
+        e("button", { style: Object.assign({}, S.bigBtn, S.secondaryBtn), onClick: function() { fileRef.current && fileRef.current.click(); } }, "JSON\u30d5\u30a1\u30a4\u30eb\u3092\u9078\u629e"),
+        importMsg && e("div", { style: S.msg }, importMsg)
+      ),
+      e("div", { style: S.card },
+        e("div", { style: { fontSize: 14, fontWeight: 600, marginBottom: 8, color: "#DC2626" } }, "\u5168\u30c7\u30fc\u30bf\u524a\u9664"),
+        e("button", { style: Object.assign({}, S.bigBtn, { background: "#FEE2E2", color: "#991B1B", border: "1px solid #FECACA" }), onClick: function() {
+          if (confirm("\u5168\u3066\u306e\u30c7\u30fc\u30bf\u3092\u524a\u9664\u3057\u307e\u3059\u304b\uff1f")) {
+            setState({ words: {}, settings: Object.assign({}, defaultSettings) });
+            setScreen("home");
+          }
+        } }, "\u5168\u30c7\u30fc\u30bf\u3092\u524a\u9664")
+      )
+    );
+  }
+
+  // ===== SETTINGS =====
+  if (screen === "settings") {
+    return e("div", { style: S.page },
+      e(Header, { title: "\u8a2d\u5b9a", onBack: function() { setScreen("home"); } }),
+      e("div", { style: Object.assign({}, S.card, { marginTop: 12 }) },
+        e("div", { style: { marginBottom: 12 } },
+          e("label", { style: S.label }, "1\u65e5\u306e\u5fa9\u7fd2\u4e0a\u9650"),
+          e("input", { style: S.input, type: "number", inputMode: "numeric", value: settings.dailyLimit, onChange: function(ev) { setState(function(prev) { return Object.assign({}, prev, { settings: Object.assign({}, prev.settings, { dailyLimit: Math.max(1, parseInt(ev.target.value) || 50) }) }); }); } }),
+          e("div", { style: { fontSize: 11, color: "#999", marginTop: 4 } }, "\u4e0a\u9650\u3092\u8d85\u3048\u305f\u5206\u306f\u7fcc\u65e5\u306b\u7e70\u308a\u8d8a\u3055\u308c\u307e\u3059")
+        ),
+        e("div", null,
+          e("label", { style: S.label }, "\u5352\u696d\u5224\u5b9a\uff08\u9593\u9694\u304c\u4f55\u65e5\u4ee5\u4e0a\u3067\u5352\u696d\uff09"),
+          e("input", { style: S.input, type: "number", inputMode: "numeric", value: settings.graduationDays, onChange: function(ev) { setState(function(prev) { return Object.assign({}, prev, { settings: Object.assign({}, prev.settings, { graduationDays: Math.max(7, parseInt(ev.target.value) || 30) }) }); }); } }),
+          e("div", { style: { fontSize: 11, color: "#999", marginTop: 4 } }, "\u30c7\u30d5\u30a9\u30eb\u30c8\uff1a30\u65e5")
+        )
+      )
+    );
+  }
+
+  return null;
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(App));
+</script>
+</body>
+</html>
