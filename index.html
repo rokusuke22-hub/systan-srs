@@ -69,19 +69,40 @@ function getLocalTs() {
 }
 
 function fetchCloud(url) {
-  return fetch(url + "?action=read&_t=" + Date.now()).then(function(r) { return r.json(); }).then(function(d) {
-    if (d.status === "ok") return d;
-    throw new Error(d.message || "cloud error");
-  });
+  return fetch(url + "?action=read&_t=" + Date.now(), { redirect: "follow" })
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      if (d.status === "ok") return d;
+      throw new Error(d.message || "cloud error");
+    });
 }
 
 function pushCloud(url, state) {
   var ts = Date.now();
   localStorage.setItem(STORAGE_KEY + "-ts", String(ts));
-  var encoded = encodeURIComponent(JSON.stringify(state));
-  return fetch(url + "?action=write&ts=" + ts + "&data=" + encoded + "&_t=" + ts).then(function(r) { return r.json(); }).then(function(d) {
-    if (d.status === "ok") return d;
-    throw new Error(d.message || "push error");
+  var payload = JSON.stringify({ timestamp: ts, data: state });
+
+  // Use no-cors POST to bypass redirect/CORS issues
+  // We can't read the response, so we verify with a subsequent GET
+  return fetch(url, {
+    method: "POST",
+    mode: "no-cors",
+    headers: { "Content-Type": "text/plain;charset=utf-8" },
+    body: payload
+  }).then(function() {
+    // Wait a moment for GAS to process, then verify
+    return new Promise(function(resolve) { setTimeout(resolve, 1500); });
+  }).then(function() {
+    return fetch(url + "?action=read&_t=" + Date.now(), { redirect: "follow" });
+  }).then(function(r) { return r.json(); }).then(function(d) {
+    if (d.status === "ok" && d.timestamp >= ts) return d;
+    // POST may have failed, try GET-based write as fallback
+    var encoded = encodeURIComponent(JSON.stringify(state));
+    if (encoded.length < 7000) {
+      return fetch(url + "?action=write&ts=" + ts + "&data=" + encoded + "&_t=" + ts, { redirect: "follow" })
+        .then(function(r2) { return r2.json(); });
+    }
+    throw new Error("sync_verify_failed");
   });
 }
 
@@ -691,7 +712,70 @@ function App() {
             setSyncStatus("offline");
             alert("\u53d6\u308a\u8fbc\u307f\u5931\u6557: " + err.message);
           });
-        } }, "\u30af\u30e9\u30a6\u30c9\u304b\u3089\u53d6\u308a\u8fbc\u307f")
+        } }, "\u30af\u30e9\u30a6\u30c9\u304b\u3089\u53d6\u308a\u8fbc\u307f"),
+        settings.gasUrl && e("button", { style: Object.assign({}, S.bigBtn, { background: "#EFF6FF", color: "#1E40AF", border: "1px solid #BFDBFE", marginTop: 4 }), onClick: function() {
+          var log = [];
+          log.push("=== 接続テスト開始 ===");
+          log.push("GAS URL: " + settings.gasUrl.substring(0, 50) + "...");
+          log.push("");
+
+          // Test 1: GET read
+          log.push("1. GET読み取りテスト...");
+          fetch(settings.gasUrl + "?action=read&_t=" + Date.now(), { redirect: "follow" })
+            .then(function(r) {
+              log.push("   HTTP status: " + r.status);
+              log.push("   URL: " + r.url.substring(0, 60) + "...");
+              return r.text();
+            })
+            .then(function(text) {
+              log.push("   Response: " + text.substring(0, 200));
+              log.push("");
+
+              // Test 2: POST write
+              log.push("2. POST書き込みテスト...");
+              var testPayload = JSON.stringify({ timestamp: Date.now(), data: { words: { "9999": { id: 9999, phrase: "test", meaning: "テスト" } }, settings: defaultSettings } });
+              return fetch(settings.gasUrl, {
+                method: "POST",
+                mode: "no-cors",
+                headers: { "Content-Type": "text/plain;charset=utf-8" },
+                body: testPayload
+              });
+            })
+            .then(function(r) {
+              log.push("   POST完了（no-cors: response type=" + r.type + "）");
+              log.push("   2秒待機して検証...");
+              return new Promise(function(resolve) { setTimeout(resolve, 2000); });
+            })
+            .then(function() {
+              return fetch(settings.gasUrl + "?action=read&_t=" + Date.now(), { redirect: "follow" });
+            })
+            .then(function(r) { return r.text(); })
+            .then(function(text) {
+              log.push("   検証GET: " + text.substring(0, 200));
+              var hasTest = text.indexOf("9999") !== -1;
+              log.push("");
+              log.push(hasTest ? "✅ POST成功：スプレッドシートにデータ書き込み確認" : "❌ POST失敗：データが書き込まれていません");
+
+              if (!hasTest) {
+                log.push("");
+                log.push("3. GET書き込みフォールバックテスト...");
+                var encoded = encodeURIComponent(JSON.stringify({ words: { "9998": { id: 9998, phrase: "fallback", meaning: "フォールバック" } }, settings: defaultSettings }));
+                return fetch(settings.gasUrl + "?action=write&ts=" + Date.now() + "&data=" + encoded + "&_t=" + Date.now(), { redirect: "follow" })
+                  .then(function(r) { return r.text(); })
+                  .then(function(text2) {
+                    log.push("   GET write response: " + text2.substring(0, 200));
+                    var hasWrite = text2.indexOf("ok") !== -1;
+                    log.push(hasWrite ? "✅ GETフォールバック成功" : "❌ GETフォールバックも失敗");
+                    alert(log.join("\n"));
+                  });
+              }
+              alert(log.join("\n"));
+            })
+            .catch(function(err) {
+              log.push("❌ エラー: " + err.message);
+              alert(log.join("\n"));
+            });
+        } }, "\u63a5\u7d9a\u30c6\u30b9\u30c8\uff08\u8a3a\u65ad\uff09")
       )
     );
   }
