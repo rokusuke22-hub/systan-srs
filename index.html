@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="ja">
 <head>
@@ -70,7 +69,7 @@ function getLocalTs() {
 }
 
 function fetchCloud(url) {
-  return fetch(url).then(function(r) { return r.json(); }).then(function(d) {
+  return fetch(url + "?action=read&_t=" + Date.now()).then(function(r) { return r.json(); }).then(function(d) {
     if (d.status === "ok") return d;
     throw new Error(d.message || "cloud error");
   });
@@ -79,11 +78,11 @@ function fetchCloud(url) {
 function pushCloud(url, state) {
   var ts = Date.now();
   localStorage.setItem(STORAGE_KEY + "-ts", String(ts));
-  return fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "text/plain" },
-    body: JSON.stringify({ timestamp: ts, data: state })
-  }).then(function(r) { return r.json(); });
+  var encoded = encodeURIComponent(JSON.stringify(state));
+  return fetch(url + "?action=write&ts=" + ts + "&data=" + encoded + "&_t=" + ts).then(function(r) { return r.json(); }).then(function(d) {
+    if (d.status === "ok") return d;
+    throw new Error(d.message || "push error");
+  });
 }
 
 const btnStyles = {
