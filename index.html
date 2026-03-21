@@ -8,6 +8,7 @@
 <meta name="theme-color" content="#FAFAF8">
 <title>シス単 SRS</title>
 <link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-192.png">
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   body { font-family: 'Helvetica Neue', 'Hiragino Kaku Gothic ProN', sans-serif; background: #FAFAF8; color: #1a1a1a; }
@@ -49,7 +50,7 @@ function makeWord(id, phrase, meaning) {
   return { id: id, phrase: phrase || "", meaning: meaning || "", repetitions: 0, interval: 0, easeFactor: 2.5, nextReviewDate: today(), lastReviewDate: null, lastQuality: null, graduated: false, createdDate: today() };
 }
 
-const defaultSettings = { dailyLimit: 50, graduationDays: 30 };
+const defaultSettings = { dailyLimit: 50, graduationDays: 30, gasUrl: "" };
 
 function loadState() {
   try { const s = localStorage.getItem(STORAGE_KEY); if (s) return JSON.parse(s); } catch (e) {}
@@ -57,7 +58,31 @@ function loadState() {
 }
 
 function saveState(state) {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (e) {}
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    localStorage.setItem(STORAGE_KEY + "-ts", String(Date.now()));
+  } catch (e) {}
+}
+
+function getLocalTs() {
+  return Number(localStorage.getItem(STORAGE_KEY + "-ts") || 0);
+}
+
+function fetchCloud(url) {
+  return fetch(url).then(function(r) { return r.json(); }).then(function(d) {
+    if (d.status === "ok") return d;
+    throw new Error(d.message || "cloud error");
+  });
+}
+
+function pushCloud(url, state) {
+  var ts = Date.now();
+  localStorage.setItem(STORAGE_KEY + "-ts", String(ts));
+  return fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "text/plain" },
+    body: JSON.stringify({ timestamp: ts, data: state })
+  }).then(function(r) { return r.json(); });
 }
 
 const btnStyles = {
@@ -125,8 +150,45 @@ function App() {
   var _vm = useState("list"), viewMode = _vm[0], setViewMode = _vm[1];
   var fileRef = useRef(null);
   var csvFileRef = useRef(null);
+  var _sy = useState(""), syncStatus = _sy[0], setSyncStatus = _sy[1];
+  var _sd = useState(false), showSyncDialog = _sd[0], setShowSyncDialog = _sd[1];
+  var _cd = useState(null), pendingCloudData = _cd[0], setPendingCloudData = _cd[1];
+  var syncPushTimer = useRef(null);
 
   useEffect(function() { saveState(state); }, [state]);
+
+  // Background push to cloud after state changes (debounced 2 seconds)
+  useEffect(function() {
+    if (!settings.gasUrl) return;
+    if (syncPushTimer.current) clearTimeout(syncPushTimer.current);
+    syncPushTimer.current = setTimeout(function() {
+      setSyncStatus("syncing");
+      pushCloud(settings.gasUrl, state).then(function() {
+        setSyncStatus("synced");
+        setTimeout(function() { setSyncStatus(""); }, 2000);
+      }).catch(function() {
+        setSyncStatus("offline");
+      });
+    }, 2000);
+    return function() { if (syncPushTimer.current) clearTimeout(syncPushTimer.current); };
+  }, [state, settings.gasUrl]);
+
+  // Initial sync on mount
+  useEffect(function() {
+    if (!settings.gasUrl) return;
+    setSyncStatus("syncing");
+    fetchCloud(settings.gasUrl).then(function(cloud) {
+      if (!cloud.data) { setSyncStatus(""); return; }
+      var localTs = getLocalTs();
+      if (cloud.timestamp > localTs) {
+        setPendingCloudData(cloud.data);
+        setShowSyncDialog(true);
+      }
+      setSyncStatus("");
+    }).catch(function() {
+      setSyncStatus("offline");
+    });
+  }, []);
 
   var words = state.words;
   var settings = state.settings;
@@ -248,10 +310,32 @@ function App() {
 
   // ===== HOME =====
   if (screen === "home") {
+    var syncLabel = syncStatus === "syncing" ? "\u540c\u671f\u4e2d..." : syncStatus === "synced" ? "\u2713 \u540c\u671f\u5b8c\u4e86" : syncStatus === "offline" ? "\u30aa\u30d5\u30e9\u30a4\u30f3" : settings.gasUrl ? "\u30af\u30e9\u30a6\u30c9\u63a5\u7d9a\u6e08" : "";
+    var syncColor = syncStatus === "synced" ? "#065F46" : syncStatus === "offline" ? "#991B1B" : "#999";
     return e("div", { style: S.page },
+      // Sync dialog
+      showSyncDialog && e("div", { style: { position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(0,0,0,0.4)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: 16 } },
+        e("div", { style: { background: "#fff", borderRadius: 16, padding: 24, maxWidth: 360, width: "100%", textAlign: "center" } },
+          e("div", { style: { fontSize: 15, fontWeight: 600, marginBottom: 12 } }, "\u5225\u306e\u7aef\u672b\u3067\u66f4\u65b0\u304c\u3042\u308a\u307e\u3059"),
+          e("div", { style: { fontSize: 13, color: "#6B6B6B", marginBottom: 20, lineHeight: 1.6 } }, "\u30af\u30e9\u30a6\u30c9\u306e\u30c7\u30fc\u30bf\u3092\u53d6\u308a\u8fbc\u307f\u307e\u3059\u304b\uff1f"),
+          e("button", { style: Object.assign({}, S.bigBtn, S.primaryBtn, { marginBottom: 8 }), onClick: function() {
+            if (pendingCloudData) {
+              setState(pendingCloudData);
+              saveState(pendingCloudData);
+            }
+            setShowSyncDialog(false); setPendingCloudData(null);
+          } }, "\u306f\u3044\uff08\u30af\u30e9\u30a6\u30c9\u306e\u30c7\u30fc\u30bf\u3092\u4f7f\u3046\uff09"),
+          e("button", { style: Object.assign({}, S.bigBtn, S.secondaryBtn), onClick: function() {
+            setShowSyncDialog(false); setPendingCloudData(null);
+            // Push local to cloud to overwrite
+            if (settings.gasUrl) pushCloud(settings.gasUrl, state).catch(function(){});
+          } }, "\u3044\u3044\u3048\uff08\u3053\u306e\u7aef\u672b\u306e\u30c7\u30fc\u30bf\u3092\u4f7f\u3046\uff09")
+        )
+      ),
       e("div", { style: { padding: "20px 0 16px", textAlign: "center" } },
         e("div", { style: { fontSize: 11, fontWeight: 600, letterSpacing: 2, color: "#999", textTransform: "uppercase" } }, "\u30b7\u30b9\u5358 SRS"),
-        e("div", { style: { fontSize: 13, color: "#6B6B6B", marginTop: 4 } }, today())
+        e("div", { style: { fontSize: 13, color: "#6B6B6B", marginTop: 4 } }, today()),
+        syncLabel && e("div", { style: { fontSize: 11, color: syncColor, marginTop: 4 } }, syncLabel)
       ),
       e("div", { style: Object.assign({}, S.card, { textAlign: "center", padding: 24 }) },
         e("div", { style: { fontSize: 42, fontWeight: 700, color: todayCount > 0 ? "#1a1a1a" : "#065F46" } }, todayCount),
@@ -573,6 +657,41 @@ function App() {
           e("input", { style: S.input, type: "number", inputMode: "numeric", value: settings.graduationDays, onChange: function(ev) { setState(function(prev) { return Object.assign({}, prev, { settings: Object.assign({}, prev.settings, { graduationDays: Math.max(7, parseInt(ev.target.value) || 30) }) }); }); } }),
           e("div", { style: { fontSize: 11, color: "#999", marginTop: 4 } }, "\u30c7\u30d5\u30a9\u30eb\u30c8\uff1a30\u65e5")
         )
+      ),
+      e("div", { style: Object.assign({}, S.card) },
+        e("div", { style: { fontSize: 14, fontWeight: 600, marginBottom: 8 } }, "\u30af\u30e9\u30a6\u30c9\u540c\u671f"),
+        e("div", { style: { fontSize: 12, color: "#6B6B6B", marginBottom: 8, lineHeight: 1.6 } }, "Google Apps Script\u306eURL\u3092\u8a2d\u5b9a\u3059\u308b\u3068\u3001\u8907\u6570\u7aef\u672b\u9593\u3067\u30c7\u30fc\u30bf\u304c\u81ea\u52d5\u540c\u671f\u3055\u308c\u307e\u3059\u3002\u7a7a\u6b04\u306e\u5834\u5408\u306f\u30ed\u30fc\u30ab\u30eb\u306e\u307f\u3067\u52d5\u4f5c\u3057\u307e\u3059\u3002"),
+        e("div", { style: { marginBottom: 12 } },
+          e("label", { style: S.label }, "GAS URL"),
+          e("input", { style: Object.assign({}, S.input, { fontSize: 12 }), type: "url", value: settings.gasUrl || "", placeholder: "https://script.google.com/macros/s/...", onChange: function(ev) { setState(function(prev) { return Object.assign({}, prev, { settings: Object.assign({}, prev.settings, { gasUrl: ev.target.value.trim() }) }); }); } })
+        ),
+        settings.gasUrl && e("button", { style: Object.assign({}, S.bigBtn, S.secondaryBtn), onClick: function() {
+          setSyncStatus("syncing");
+          pushCloud(settings.gasUrl, state).then(function() {
+            setSyncStatus("synced");
+            setTimeout(function() { setSyncStatus(""); }, 2000);
+            alert("\u540c\u671f\u5b8c\u4e86");
+          }).catch(function(err) {
+            setSyncStatus("offline");
+            alert("\u540c\u671f\u5931\u6557: " + err.message);
+          });
+        } }, "\u4eca\u3059\u3050\u540c\u671f"),
+        settings.gasUrl && e("button", { style: Object.assign({}, S.bigBtn, S.secondaryBtn), onClick: function() {
+          setSyncStatus("syncing");
+          fetchCloud(settings.gasUrl).then(function(cloud) {
+            if (cloud.data) {
+              setState(cloud.data);
+              saveState(cloud.data);
+              alert("\u30af\u30e9\u30a6\u30c9\u304b\u3089\u53d6\u308a\u8fbc\u307f\u307e\u3057\u305f");
+            } else {
+              alert("\u30af\u30e9\u30a6\u30c9\u306b\u30c7\u30fc\u30bf\u304c\u3042\u308a\u307e\u305b\u3093");
+            }
+            setSyncStatus("");
+          }).catch(function(err) {
+            setSyncStatus("offline");
+            alert("\u53d6\u308a\u8fbc\u307f\u5931\u6557: " + err.message);
+          });
+        } }, "\u30af\u30e9\u30a6\u30c9\u304b\u3089\u53d6\u308a\u8fbc\u307f")
       )
     );
   }
@@ -581,6 +700,13 @@ function App() {
 }
 
 ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(App));
+</script>
+<script>
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", function() {
+    navigator.serviceWorker.register("./sw.js");
+  });
+}
 </script>
 </body>
 </html>
