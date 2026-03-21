@@ -175,44 +175,86 @@ function App() {
   var _sd = useState(false), showSyncDialog = _sd[0], setShowSyncDialog = _sd[1];
   var _cd = useState(null), pendingCloudData = _cd[0], setPendingCloudData = _cd[1];
   var syncPushTimer = useRef(null);
+  var initialSyncDone = useRef(false);
 
   var words = state.words;
   var settings = state.settings || defaultSettings;
 
   useEffect(function() { saveState(state); }, [state]);
 
-  // Background push to cloud after state changes (debounced 2 seconds)
+  // Background push to cloud after state changes (debounced 3 seconds)
+  // Always compares local vs cloud timestamp before pushing
   useEffect(function() {
     if (!settings.gasUrl) return;
+    if (!initialSyncDone.current) return;
     if (syncPushTimer.current) clearTimeout(syncPushTimer.current);
     syncPushTimer.current = setTimeout(function() {
+      var localTs = getLocalTs();
       setSyncStatus("syncing");
-      pushCloud(settings.gasUrl, state).then(function() {
-        setSyncStatus("synced");
-        setTimeout(function() { setSyncStatus(""); }, 2000);
+      // First check: is cloud newer than us?
+      fetchCloud(settings.gasUrl).then(function(cloud) {
+        if (cloud.timestamp > localTs) {
+          // Cloud is newer - don't overwrite. Show dialog.
+          setSyncStatus("");
+          setPendingCloudData(cloud.data);
+          setShowSyncDialog(true);
+          return;
+        }
+        // Local is newer or same - safe to push
+        return pushCloud(settings.gasUrl, state).then(function() {
+          setSyncStatus("synced");
+          setTimeout(function() { setSyncStatus(""); }, 2000);
+        });
       }).catch(function() {
         setSyncStatus("offline");
       });
-    }, 2000);
+    }, 3000);
     return function() { if (syncPushTimer.current) clearTimeout(syncPushTimer.current); };
   }, [state, settings.gasUrl]);
 
   // Initial sync on mount
   useEffect(function() {
-    if (!settings.gasUrl) return;
+    if (!settings.gasUrl) {
+      initialSyncDone.current = true;
+      return;
+    }
     setSyncStatus("syncing");
     fetchCloud(settings.gasUrl).then(function(cloud) {
-      if (!cloud.data) { setSyncStatus(""); return; }
+      if (!cloud.data) {
+        initialSyncDone.current = true;
+        setSyncStatus("");
+        return;
+      }
       var localTs = getLocalTs();
       if (cloud.timestamp > localTs) {
+        // Cloud is newer - ask user
         setPendingCloudData(cloud.data);
         setShowSyncDialog(true);
       }
+      initialSyncDone.current = true;
       setSyncStatus("");
     }).catch(function() {
+      initialSyncDone.current = true;
       setSyncStatus("offline");
     });
   }, []);
+
+  // Poll cloud every 30 seconds for changes from other devices
+  useEffect(function() {
+    if (!settings.gasUrl) return;
+    var pollId = setInterval(function() {
+      if (!initialSyncDone.current) return;
+      if (showSyncDialog) return;
+      var localTs = getLocalTs();
+      fetchCloud(settings.gasUrl).then(function(cloud) {
+        if (cloud.data && cloud.timestamp > localTs) {
+          setPendingCloudData(cloud.data);
+          setShowSyncDialog(true);
+        }
+      }).catch(function() {});
+    }, 30000);
+    return function() { clearInterval(pollId); };
+  }, [settings.gasUrl, showSyncDialog]);
 
   var getTodayReviews = useCallback(function() {
     var t = today();
@@ -688,6 +730,7 @@ function App() {
         ),
         settings.gasUrl && e("button", { style: Object.assign({}, S.bigBtn, S.secondaryBtn), onClick: function() {
           setSyncStatus("syncing");
+          initialSyncDone.current = true;
           pushCloud(settings.gasUrl, state).then(function() {
             setSyncStatus("synced");
             setTimeout(function() { setSyncStatus(""); }, 2000);
@@ -701,6 +744,7 @@ function App() {
           setSyncStatus("syncing");
           fetchCloud(settings.gasUrl).then(function(cloud) {
             if (cloud.data) {
+              initialSyncDone.current = true;
               setState(cloud.data);
               saveState(cloud.data);
               alert("\u30af\u30e9\u30a6\u30c9\u304b\u3089\u53d6\u308a\u8fbc\u307f\u307e\u3057\u305f");
