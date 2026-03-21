@@ -60,7 +60,6 @@ function loadState() {
 function saveState(state) {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-    localStorage.setItem(STORAGE_KEY + "-ts", String(Date.now()));
   } catch (e) {}
 }
 
@@ -69,18 +68,39 @@ function getLocalTs() {
 }
 
 function fetchCloud(url) {
-  return fetch(url + "?action=read&_t=" + Date.now(), { redirect: "follow" })
-    .then(function(r) { return r.json(); })
+  var requestId = "fetch_" + Date.now() + "_" + Math.random().toString(36).substr(2, 9);
+  console.log("[fetchCloud] id=" + requestId + ", url=" + url.substring(0, 60) + "...");
+  
+  return fetch(url + "?action=read&_t=" + Date.now() + "&id=" + requestId, { redirect: "follow" })
+    .then(function(r) { 
+      console.log("[fetchCloud] HTTP " + r.status);
+      return r.json(); 
+    })
     .then(function(d) {
+      console.log("[fetchCloud] response: ts=" + (d.timestamp || "?") + ", hasData=" + (d.data ? "yes" : "no"));
       if (d.status === "ok") return d;
       throw new Error(d.message || "cloud error");
+    })
+    .catch(function(err) {
+      console.error("[fetchCloud] error: " + err.message);
+      throw err;
     });
 }
 
 function pushCloud(url, state) {
   var ts = Date.now();
+  var requestId = "push_" + ts + "_" + Math.random().toString(36).substr(2, 9);
+  
+  console.log("[pushCloud START] id=" + requestId + ", ts=" + ts);
+  
+  // ★重要★: POST前にローカルタイムスタンプを先行設定
   localStorage.setItem(STORAGE_KEY + "-ts", String(ts));
-  var payload = JSON.stringify({ timestamp: ts, data: state });
+  
+  var payload = JSON.stringify({ 
+    timestamp: ts, 
+    data: state,
+    requestId: requestId
+  });
 
   // Use no-cors POST to bypass redirect/CORS issues
   // We can't read the response, so we verify with a subsequent GET
@@ -90,19 +110,37 @@ function pushCloud(url, state) {
     headers: { "Content-Type": "text/plain;charset=utf-8" },
     body: payload
   }).then(function() {
+    console.log("[pushCloud POST] no-cors request sent (response unreadable)");
     // Wait a moment for GAS to process, then verify
-    return new Promise(function(resolve) { setTimeout(resolve, 1500); });
+    return new Promise(function(resolve) { 
+      setTimeout(function() {
+        console.log("[pushCloud WAIT] 1.5秒待機完了");
+        resolve();
+      }, 1500); 
+    });
   }).then(function() {
-    return fetch(url + "?action=read&_t=" + Date.now(), { redirect: "follow" });
+    console.log("[pushCloud VERIFY] 検証GET実行...");
+    return fetch(url + "?action=read&_t=" + Date.now() + "&id=" + requestId, { redirect: "follow" });
   }).then(function(r) { return r.json(); }).then(function(d) {
-    if (d.status === "ok" && d.timestamp >= ts) return d;
+    console.log("[pushCloud VERIFY] GAS response: ts=" + (d.timestamp || "?"));
+    
+    if (d.status === "ok" && d.timestamp >= ts) {
+      console.log("[pushCloud SUCCESS] クラウド同期完了。cloud.ts=" + d.timestamp + ", local.ts=" + ts);
+      return d;
+    }
+    
+    console.log("[pushCloud VERIFY FAILED] cloud.ts(" + d.timestamp + ") < local.ts(" + ts + ")。フォールバック試行...");
+    
     // POST may have failed, try GET-based write as fallback
     var encoded = encodeURIComponent(JSON.stringify(state));
     if (encoded.length < 7000) {
-      return fetch(url + "?action=write&ts=" + ts + "&data=" + encoded + "&_t=" + ts, { redirect: "follow" })
+      return fetch(url + "?action=write&ts=" + ts + "&data=" + encoded + "&id=" + requestId + "&_t=" + ts, { redirect: "follow" })
         .then(function(r2) { return r2.json(); });
     }
     throw new Error("sync_verify_failed");
+  }).catch(function(err) {
+    console.error("[pushCloud ERROR] " + err.message);
+    throw err;
   });
 }
 
@@ -176,6 +214,7 @@ function App() {
   var _cd = useState(null), pendingCloudData = _cd[0], setPendingCloudData = _cd[1];
   var syncPushTimer = useRef(null);
   var initialSyncDone = useRef(false);
+  var skipNextPush = useRef(false);
 
   var words = state.words;
   var settings = state.settings || defaultSettings;
@@ -183,29 +222,36 @@ function App() {
   useEffect(function() { saveState(state); }, [state]);
 
   // Background push to cloud after state changes (debounced 3 seconds)
-  // Always compares local vs cloud timestamp before pushing
   useEffect(function() {
     if (!settings.gasUrl) return;
     if (!initialSyncDone.current) return;
+    if (skipNextPush.current) { 
+      console.log("[BG PUSH] skipNextPush=true でスキップ");
+      skipNextPush.current = false; 
+      return; 
+    }
     if (syncPushTimer.current) clearTimeout(syncPushTimer.current);
+    console.log("[BG PUSH] state変更検知。3秒後に同期判定...");
     syncPushTimer.current = setTimeout(function() {
       var localTs = getLocalTs();
+      console.log("[BG PUSH TIMER] 実行。localTs=" + localTs);
       setSyncStatus("syncing");
-      // First check: is cloud newer than us?
       fetchCloud(settings.gasUrl).then(function(cloud) {
+        console.log("[BG PUSH CHECK] cloud.ts=" + cloud.timestamp + " vs local.ts=" + localTs);
         if (cloud.timestamp > localTs) {
-          // Cloud is newer - don't overwrite. Show dialog.
+          console.log("[BG PUSH] クラウドが新しい。ダイアログ表示");
           setSyncStatus("");
-          setPendingCloudData(cloud.data);
+          setPendingCloudData({ data: cloud.data, ts: cloud.timestamp });
           setShowSyncDialog(true);
           return;
         }
-        // Local is newer or same - safe to push
+        console.log("[BG PUSH] ローカルが新しい（または同期）。pushCloud実行");
         return pushCloud(settings.gasUrl, state).then(function() {
           setSyncStatus("synced");
           setTimeout(function() { setSyncStatus(""); }, 2000);
         });
       }).catch(function() {
+        console.error("[BG PUSH] エラー");
         setSyncStatus("offline");
       });
     }, 3000);
@@ -228,7 +274,7 @@ function App() {
       var localTs = getLocalTs();
       if (cloud.timestamp > localTs) {
         // Cloud is newer - ask user
-        setPendingCloudData(cloud.data);
+        setPendingCloudData({ data: cloud.data, ts: cloud.timestamp });
         setShowSyncDialog(true);
       }
       initialSyncDone.current = true;
@@ -242,18 +288,35 @@ function App() {
   // Poll cloud every 30 seconds for changes from other devices
   useEffect(function() {
     if (!settings.gasUrl) return;
+    console.log("[POLL] ポーリング開始（30秒ごと）");
     var pollId = setInterval(function() {
-      if (!initialSyncDone.current) return;
-      if (showSyncDialog) return;
+      if (!initialSyncDone.current) {
+        console.log("[POLL] initialSyncDone=false でスキップ");
+        return;
+      }
+      if (showSyncDialog) {
+        console.log("[POLL] ダイアログ表示中でスキップ");
+        return;
+      }
       var localTs = getLocalTs();
+      console.log("[POLL] 実行。localTs=" + localTs);
       fetchCloud(settings.gasUrl).then(function(cloud) {
+        console.log("[POLL CHECK] cloud.ts=" + cloud.timestamp + " vs local.ts=" + localTs);
         if (cloud.data && cloud.timestamp > localTs) {
-          setPendingCloudData(cloud.data);
+          console.log("[POLL] クラウドが新しい。ダイアログ表示");
+          setPendingCloudData({ data: cloud.data, ts: cloud.timestamp });
           setShowSyncDialog(true);
+        } else {
+          console.log("[POLL] 更新なし");
         }
-      }).catch(function() {});
+      }).catch(function(err) {
+        console.log("[POLL] エラー: " + err.message);
+      });
     }, 30000);
-    return function() { clearInterval(pollId); };
+    return function() { 
+      console.log("[POLL] useEffect cleanup: ポーリング停止");
+      clearInterval(pollId); 
+    };
   }, [settings.gasUrl, showSyncDialog]);
 
   var getTodayReviews = useCallback(function() {
@@ -383,8 +446,13 @@ function App() {
           e("div", { style: { fontSize: 13, color: "#6B6B6B", marginBottom: 20, lineHeight: 1.6 } }, "\u30af\u30e9\u30a6\u30c9\u306e\u30c7\u30fc\u30bf\u3092\u53d6\u308a\u8fbc\u307f\u307e\u3059\u304b\uff1f"),
           e("button", { style: Object.assign({}, S.bigBtn, S.primaryBtn, { marginBottom: 8 }), onClick: function() {
             if (pendingCloudData) {
-              setState(pendingCloudData);
-              saveState(pendingCloudData);
+              skipNextPush.current = true;
+              setState(pendingCloudData.data);
+              // Set local timestamp to match cloud — prevents auto-push from re-uploading
+              try {
+                localStorage.setItem(STORAGE_KEY, JSON.stringify(pendingCloudData.data));
+                localStorage.setItem(STORAGE_KEY + "-ts", String(pendingCloudData.ts));
+              } catch(ex) {}
             }
             setShowSyncDialog(false); setPendingCloudData(null);
           } }, "\u306f\u3044\uff08\u30af\u30e9\u30a6\u30c9\u306e\u30c7\u30fc\u30bf\u3092\u4f7f\u3046\uff09"),
@@ -744,9 +812,13 @@ function App() {
           setSyncStatus("syncing");
           fetchCloud(settings.gasUrl).then(function(cloud) {
             if (cloud.data) {
+              skipNextPush.current = true;
               initialSyncDone.current = true;
               setState(cloud.data);
-              saveState(cloud.data);
+              try {
+                localStorage.setItem(STORAGE_KEY, JSON.stringify(cloud.data));
+                localStorage.setItem(STORAGE_KEY + "-ts", String(cloud.timestamp));
+              } catch(ex) {}
               alert("\u30af\u30e9\u30a6\u30c9\u304b\u3089\u53d6\u308a\u8fbc\u307f\u307e\u3057\u305f");
             } else {
               alert("\u30af\u30e9\u30a6\u30c9\u306b\u30c7\u30fc\u30bf\u304c\u3042\u308a\u307e\u305b\u3093");
