@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="ja">
 <head>
@@ -155,6 +156,9 @@ function App() {
   var _cd = useState(null), pendingCloudData = _cd[0], setPendingCloudData = _cd[1];
   var syncPushTimer = useRef(null);
 
+  var words = state.words;
+  var settings = state.settings || defaultSettings;
+
   useEffect(function() { saveState(state); }, [state]);
 
   // Background push to cloud after state changes (debounced 2 seconds)
@@ -189,9 +193,6 @@ function App() {
       setSyncStatus("offline");
     });
   }, []);
-
-  var words = state.words;
-  var settings = state.settings;
 
   var getTodayReviews = useCallback(function() {
     var t = today();
