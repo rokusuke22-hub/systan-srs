@@ -50,7 +50,18 @@ function makeWord(id, phrase, meaning) {
   return { id: id, phrase: phrase || "", meaning: meaning || "", repetitions: 0, interval: 0, easeFactor: 2.5, nextReviewDate: today(), lastReviewDate: null, lastQuality: null, graduated: false, createdDate: today() };
 }
 
-const defaultSettings = { dailyLimit: 50, graduationDays: 30, gasUrl: "" };
+// ★★★ GAS URL をここに直接設定してください ★★★
+// デプロイ後のURLを貼り付け。空文字ならローカルのみで動作。
+// Safari の localStorage 消失問題を根本回避するため、設定UIから独立させています。
+const HARDCODED_GAS_URL = "https://script.google.com/macros/s/AKfycbwo6Vp21jJDByb9zsmJQQL-CmPmP5lejWk-KPIRTVyHf9cFLWaDlka3UoA1hWDoD9MkdQ/exec";
+// ↑↑↑ ここにあなたの GAS URL を貼り付けてください ↑↑↑
+
+const defaultSettings = { dailyLimit: 50, graduationDays: 30 };
+
+// GAS URLの取得: コード埋込み優先、旧settings残存分をフォールバック
+function getGasUrl(settings) {
+  return HARDCODED_GAS_URL || (settings && settings.gasUrl) || "";
+}
 
 function loadState() {
   try { const s = localStorage.getItem(STORAGE_KEY); if (s) return JSON.parse(s); } catch (e) {}
@@ -219,11 +230,14 @@ function App() {
   var words = state.words;
   var settings = state.settings || defaultSettings;
 
-  useEffect(function() { saveState(state); }, [state]);
+  // データの自動保存（URL消失防止ガード付き）
+  useEffect(function() {
+    saveState(state);
+  }, [state]);
 
   // Background push to cloud after state changes (debounced 3 seconds)
   useEffect(function() {
-    if (!settings.gasUrl) return;
+    var _gasUrl = getGasUrl(settings); if (!_gasUrl) return;
     if (!initialSyncDone.current) return;
     if (skipNextPush.current) { 
       console.log("[BG PUSH] skipNextPush=true でスキップ");
@@ -236,7 +250,7 @@ function App() {
       var localTs = getLocalTs();
       console.log("[BG PUSH TIMER] 実行。localTs=" + localTs);
       setSyncStatus("syncing");
-      fetchCloud(settings.gasUrl).then(function(cloud) {
+      fetchCloud(getGasUrl(settings)).then(function(cloud) {
         console.log("[BG PUSH CHECK] cloud.ts=" + cloud.timestamp + " vs local.ts=" + localTs);
         if (cloud.timestamp > localTs) {
           console.log("[BG PUSH] クラウドが新しい。ダイアログ表示");
@@ -246,7 +260,7 @@ function App() {
           return;
         }
         console.log("[BG PUSH] ローカルが新しい（または同期）。pushCloud実行");
-        return pushCloud(settings.gasUrl, state).then(function() {
+        return pushCloud(getGasUrl(settings), state).then(function() {
           setSyncStatus("synced");
           setTimeout(function() { setSyncStatus(""); }, 2000);
         });
@@ -256,16 +270,16 @@ function App() {
       });
     }, 3000);
     return function() { if (syncPushTimer.current) clearTimeout(syncPushTimer.current); };
-  }, [state, settings.gasUrl]);
+  }, [state, getGasUrl(settings)]);
 
   // Initial sync on mount
   useEffect(function() {
-    if (!settings.gasUrl) {
+    var _gasUrl = getGasUrl(settings); if (!_gasUrl) {
       initialSyncDone.current = true;
       return;
     }
     setSyncStatus("syncing");
-    fetchCloud(settings.gasUrl).then(function(cloud) {
+    fetchCloud(getGasUrl(settings)).then(function(cloud) {
       if (!cloud.data) {
         initialSyncDone.current = true;
         setSyncStatus("");
@@ -287,7 +301,7 @@ function App() {
 
   // Poll cloud every 30 seconds for changes from other devices
   useEffect(function() {
-    if (!settings.gasUrl) return;
+    var _gasUrl = getGasUrl(settings); if (!_gasUrl) return;
     console.log("[POLL] ポーリング開始（30秒ごと）");
     var pollId = setInterval(function() {
       if (!initialSyncDone.current) {
@@ -300,7 +314,7 @@ function App() {
       }
       var localTs = getLocalTs();
       console.log("[POLL] 実行。localTs=" + localTs);
-      fetchCloud(settings.gasUrl).then(function(cloud) {
+      fetchCloud(getGasUrl(settings)).then(function(cloud) {
         console.log("[POLL CHECK] cloud.ts=" + cloud.timestamp + " vs local.ts=" + localTs);
         if (cloud.data && cloud.timestamp > localTs) {
           console.log("[POLL] クラウドが新しい。ダイアログ表示");
@@ -317,7 +331,7 @@ function App() {
       console.log("[POLL] useEffect cleanup: ポーリング停止");
       clearInterval(pollId); 
     };
-  }, [settings.gasUrl, showSyncDialog]);
+  }, [getGasUrl(settings), showSyncDialog]);
 
   var getTodayReviews = useCallback(function() {
     var t = today();
@@ -388,7 +402,7 @@ function App() {
 
   function registerWord(id, phrase, meaning) {
     var n = parseInt(id);
-    if (isNaN(n) || n < 1 || n > 2027) return "\u756a\u53f7\u306f1\u301c2027\u3067\u5165\u529b";
+    if (isNaN(n) || n < 1 || n > 99999) return "\u756a\u53f7\u306f1\u4ee5\u4e0a\u3067\u5165\u529b";
     if (words[n]) {
       setState(function(prev) { var w = Object.assign({}, prev.words); w[n] = Object.assign({}, w[n], { phrase: phrase || w[n].phrase, meaning: meaning || w[n].meaning, repetitions: 0, interval: 1, nextReviewDate: addDays(today(), 1) }); return Object.assign({}, prev, { words: w }); });
       return "#" + n + " \u3092\u518d\u767b\u9332\uff08\u30b9\u30b1\u30b8\u30e5\u30fc\u30eb\u30ea\u30bb\u30c3\u30c8\uff09";
@@ -409,7 +423,7 @@ function App() {
       var parts = lines[i].split(",").map(function(s) { return s.trim().replace(/^"|"$/g, ""); });
       if (parts.length < 3) continue;
       var num = parseInt(parts[0]);
-      if (isNaN(num) || num < 1 || num > 2027) continue;
+      if (isNaN(num) || num < 1 || num > 99999) continue;
       if (updated[num]) {
         updated[num] = Object.assign({}, updated[num], { phrase: parts[1], meaning: parts[2] });
       } else {
@@ -436,7 +450,7 @@ function App() {
 
   // ===== HOME =====
   if (screen === "home") {
-    var syncLabel = syncStatus === "syncing" ? "\u540c\u671f\u4e2d..." : syncStatus === "synced" ? "\u2713 \u540c\u671f\u5b8c\u4e86" : syncStatus === "offline" ? "\u30aa\u30d5\u30e9\u30a4\u30f3" : settings.gasUrl ? "\u30af\u30e9\u30a6\u30c9\u63a5\u7d9a\u6e08" : "";
+    var syncLabel = syncStatus === "syncing" ? "\u540c\u671f\u4e2d..." : syncStatus === "synced" ? "\u2713 \u540c\u671f\u5b8c\u4e86" : syncStatus === "offline" ? "\u30aa\u30d5\u30e9\u30a4\u30f3" : getGasUrl(settings) ? "\u30af\u30e9\u30a6\u30c9\u63a5\u7d9a\u6e08" : "";
     var syncColor = syncStatus === "synced" ? "#065F46" : syncStatus === "offline" ? "#991B1B" : "#999";
     return e("div", { style: S.page },
       // Sync dialog
@@ -447,10 +461,16 @@ function App() {
           e("button", { style: Object.assign({}, S.bigBtn, S.primaryBtn, { marginBottom: 8 }), onClick: function() {
             if (pendingCloudData) {
               skipNextPush.current = true;
-              setState(pendingCloudData.data);
-              // Set local timestamp to match cloud — prevents auto-push from re-uploading
+              var cloudData = pendingCloudData.data || {};
+              var mergedState = {
+                words: cloudData.words || state.words,
+                settings: Object.assign({}, state.settings, cloudData.settings || {})
+              };
+              // gasUrl はコード埋込みに移行済みのため、stateからは除去
+              delete mergedState.settings.gasUrl;
+              setState(mergedState);
               try {
-                localStorage.setItem(STORAGE_KEY, JSON.stringify(pendingCloudData.data));
+                localStorage.setItem(STORAGE_KEY, JSON.stringify(mergedState));
                 localStorage.setItem(STORAGE_KEY + "-ts", String(pendingCloudData.ts));
               } catch(ex) {}
             }
@@ -459,7 +479,7 @@ function App() {
           e("button", { style: Object.assign({}, S.bigBtn, S.secondaryBtn), onClick: function() {
             setShowSyncDialog(false); setPendingCloudData(null);
             // Push local to cloud to overwrite
-            if (settings.gasUrl) pushCloud(settings.gasUrl, state).catch(function(){});
+            if (getGasUrl(settings)) pushCloud(getGasUrl(settings), state).catch(function(){});
           } }, "\u3044\u3044\u3048\uff08\u3053\u306e\u7aef\u672b\u306e\u30c7\u30fc\u30bf\u3092\u4f7f\u3046\uff09")
         )
       ),
@@ -498,12 +518,12 @@ function App() {
     var hasPhrase = regPhrase.trim().length > 0;
     var hasMeaning = regMeaning.trim().length > 0;
     var contentIncomplete = (hasPhrase && !hasMeaning) || (!hasPhrase && hasMeaning);
-    var numValid = !isNaN(parseInt(regNum)) && parseInt(regNum) >= 1 && parseInt(regNum) <= 2027;
+    var numValid = !isNaN(parseInt(regNum)) && parseInt(regNum) >= 1;
     var canRegister = numValid && !contentIncomplete;
     return e("div", { style: S.page },
       e(Header, { title: "\u8a9e\u3092\u767b\u9332", onBack: function() { setScreen("home"); setRegMsg(""); setRegNum(""); setRegPhrase(""); setRegMeaning(""); } }),
       e("div", { style: Object.assign({}, S.card, { marginTop: 12 }) },
-        e("div", { style: { marginBottom: 12 } }, e("label", { style: S.label }, "\u8a9e\u756a\u53f7\uff081\u301c2027\uff09"), e("input", { style: S.input, type: "number", inputMode: "numeric", value: regNum, onChange: function(ev) { setRegNum(ev.target.value); }, placeholder: "\u4f8b\uff1a215" })),
+        e("div", { style: { marginBottom: 12 } }, e("label", { style: S.label }, "\u8a9e\u756a\u53f7"), e("input", { style: S.input, type: "number", inputMode: "numeric", value: regNum, onChange: function(ev) { setRegNum(ev.target.value); }, placeholder: "\u4f8b\uff1a215" })),
         e("div", { style: { marginBottom: 12 } }, e("label", { style: S.label }, "\u30df\u30cb\u30de\u30eb\u30d5\u30ec\u30fc\u30ba"), e("input", { style: S.input, value: regPhrase, onChange: function(ev) { setRegPhrase(ev.target.value); }, placeholder: "\u4f8b\uff1acommit a crime" })),
         e("div", { style: { marginBottom: 12 } }, e("label", { style: S.label }, "\u65e5\u672c\u8a9e\u8a33"), e("input", { style: S.input, value: regMeaning, onChange: function(ev) { setRegMeaning(ev.target.value); }, placeholder: "\u4f8b\uff1a\u7f6a\u3092\u72af\u3059" })),
         contentIncomplete && e("div", { style: { fontSize: 12, color: "#92400E", background: "#FEF3C7", padding: "6px 10px", borderRadius: 6, marginBottom: 8 } }, "\u30d5\u30ec\u30fc\u30ba\u3068\u8a33\u306f\u4e21\u65b9\u5165\u529b\u3057\u3066\u304f\u3060\u3055\u3044\uff08\u756a\u53f7\u3060\u3051\u306e\u767b\u9332\u3082OK\uff09"),
@@ -522,7 +542,7 @@ function App() {
   if (screen === "register-bulk") {
     var rangeNums = [];
     var f = parseInt(bulkFrom), t2 = parseInt(bulkTo);
-    if (!isNaN(f) && !isNaN(t2) && f >= 1 && t2 <= 2027 && f <= t2) {
+    if (!isNaN(f) && !isNaN(t2) && f >= 1 && f <= t2) {
       for (var i = f; i <= t2; i++) rangeNums.push(i);
     }
     var toRegister = rangeNums.filter(function(n) { return !bulkExclude.has(n); });
@@ -791,15 +811,17 @@ function App() {
       ),
       e("div", { style: Object.assign({}, S.card) },
         e("div", { style: { fontSize: 14, fontWeight: 600, marginBottom: 8 } }, "\u30af\u30e9\u30a6\u30c9\u540c\u671f"),
-        e("div", { style: { fontSize: 12, color: "#6B6B6B", marginBottom: 8, lineHeight: 1.6 } }, "Google Apps Script\u306eURL\u3092\u8a2d\u5b9a\u3059\u308b\u3068\u3001\u8907\u6570\u7aef\u672b\u9593\u3067\u30c7\u30fc\u30bf\u304c\u81ea\u52d5\u540c\u671f\u3055\u308c\u307e\u3059\u3002\u7a7a\u6b04\u306e\u5834\u5408\u306f\u30ed\u30fc\u30ab\u30eb\u306e\u307f\u3067\u52d5\u4f5c\u3057\u307e\u3059\u3002"),
+        e("div", { style: { fontSize: 12, color: "#6B6B6B", marginBottom: 8, lineHeight: 1.6 } }, "GAS URL\u306findex.html\u5185\u306eHARDCODED_GAS_URL\u306b\u76f4\u63a5\u8a2d\u5b9a\u3057\u3066\u304f\u3060\u3055\u3044\u3002Safari\u3067\u306elocalStorage\u6d88\u5931\u3092\u9632\u6b62\u3057\u307e\u3059\u3002"),
         e("div", { style: { marginBottom: 12 } },
-          e("label", { style: S.label }, "GAS URL"),
-          e("input", { style: Object.assign({}, S.input, { fontSize: 12 }), type: "url", value: settings.gasUrl || "", placeholder: "https://script.google.com/macros/s/...", onChange: function(ev) { setState(function(prev) { return Object.assign({}, prev, { settings: Object.assign({}, prev.settings, { gasUrl: ev.target.value.trim() }) }); }); } })
+          e("label", { style: S.label }, "GAS URL \u72b6\u614b"),
+          e("div", { style: { fontSize: 12, padding: "8px 12px", background: getGasUrl(settings) ? "#D1FAE5" : "#FEF3C7", borderRadius: 8, color: getGasUrl(settings) ? "#065F46" : "#92400E", fontFamily: "monospace", wordBreak: "break-all" } },
+            getGasUrl(settings) ? ("\u2713 \u63a5\u7d9a\u6e08: " + getGasUrl(settings).substring(0, 50) + "...") : "\u26a0 \u672a\u8a2d\u5b9a\uff08HARDCODED_GAS_URL\u3092\u7de8\u96c6\u3057\u3066\u304f\u3060\u3055\u3044\uff09"
+          )
         ),
-        settings.gasUrl && e("button", { style: Object.assign({}, S.bigBtn, S.secondaryBtn), onClick: function() {
+        getGasUrl(settings) && e("button", { style: Object.assign({}, S.bigBtn, S.secondaryBtn), onClick: function() {
           setSyncStatus("syncing");
           initialSyncDone.current = true;
-          pushCloud(settings.gasUrl, state).then(function() {
+          pushCloud(getGasUrl(settings), state).then(function() {
             setSyncStatus("synced");
             setTimeout(function() { setSyncStatus(""); }, 2000);
             alert("\u540c\u671f\u5b8c\u4e86");
@@ -808,15 +830,21 @@ function App() {
             alert("\u540c\u671f\u5931\u6557: " + err.message);
           });
         } }, "\u4eca\u3059\u3050\u540c\u671f"),
-        settings.gasUrl && e("button", { style: Object.assign({}, S.bigBtn, S.secondaryBtn), onClick: function() {
+        getGasUrl(settings) && e("button", { style: Object.assign({}, S.bigBtn, S.secondaryBtn), onClick: function() {
           setSyncStatus("syncing");
-          fetchCloud(settings.gasUrl).then(function(cloud) {
+          var url = getGasUrl(settings);
+          fetchCloud(url).then(function(cloud) {
             if (cloud.data) {
               skipNextPush.current = true;
               initialSyncDone.current = true;
-              setState(cloud.data);
+              var mergedState = {
+                words: cloud.data.words || state.words,
+                settings: Object.assign({}, state.settings, cloud.data.settings || {})
+              };
+              delete mergedState.settings.gasUrl;
+              setState(mergedState);
               try {
-                localStorage.setItem(STORAGE_KEY, JSON.stringify(cloud.data));
+                localStorage.setItem(STORAGE_KEY, JSON.stringify(mergedState));
                 localStorage.setItem(STORAGE_KEY + "-ts", String(cloud.timestamp));
               } catch(ex) {}
               alert("\u30af\u30e9\u30a6\u30c9\u304b\u3089\u53d6\u308a\u8fbc\u307f\u307e\u3057\u305f");
@@ -829,28 +857,24 @@ function App() {
             alert("\u53d6\u308a\u8fbc\u307f\u5931\u6557: " + err.message);
           });
         } }, "\u30af\u30e9\u30a6\u30c9\u304b\u3089\u53d6\u308a\u8fbc\u307f"),
-        settings.gasUrl && e("button", { style: Object.assign({}, S.bigBtn, { background: "#EFF6FF", color: "#1E40AF", border: "1px solid #BFDBFE", marginTop: 4 }), onClick: function() {
+        getGasUrl(settings) && e("button", { style: Object.assign({}, S.bigBtn, { background: "#EFF6FF", color: "#1E40AF", border: "1px solid #BFDBFE", marginTop: 4 }), onClick: function() {
+          var gasUrl = getGasUrl(settings);
           var log = [];
-          log.push("=== 接続テスト開始 ===");
-          log.push("GAS URL: " + settings.gasUrl.substring(0, 50) + "...");
+          log.push("=== \u63a5\u7d9a\u30c6\u30b9\u30c8\u958b\u59cb ===");
+          log.push("GAS URL: " + gasUrl.substring(0, 50) + "...");
           log.push("");
-
-          // Test 1: GET read
-          log.push("1. GET読み取りテスト...");
-          fetch(settings.gasUrl + "?action=read&_t=" + Date.now(), { redirect: "follow" })
+          log.push("1. GET\u8aad\u307f\u53d6\u308a\u30c6\u30b9\u30c8...");
+          fetch(gasUrl + "?action=read&_t=" + Date.now(), { redirect: "follow" })
             .then(function(r) {
               log.push("   HTTP status: " + r.status);
-              log.push("   URL: " + r.url.substring(0, 60) + "...");
               return r.text();
             })
             .then(function(text) {
               log.push("   Response: " + text.substring(0, 200));
               log.push("");
-
-              // Test 2: POST write
-              log.push("2. POST書き込みテスト...");
-              var testPayload = JSON.stringify({ timestamp: Date.now(), data: { words: { "9999": { id: 9999, phrase: "test", meaning: "テスト" } }, settings: defaultSettings } });
-              return fetch(settings.gasUrl, {
+              log.push("2. POST\u66f8\u304d\u8fbc\u307f\u30c6\u30b9\u30c8...");
+              var testPayload = JSON.stringify({ timestamp: Date.now(), data: { words: { "9999": { id: 9999, phrase: "test", meaning: "\u30c6\u30b9\u30c8" } }, settings: defaultSettings } });
+              return fetch(gasUrl, {
                 method: "POST",
                 mode: "no-cors",
                 headers: { "Content-Type": "text/plain;charset=utf-8" },
@@ -858,37 +882,23 @@ function App() {
               });
             })
             .then(function(r) {
-              log.push("   POST完了（no-cors: response type=" + r.type + "）");
-              log.push("   2秒待機して検証...");
+              log.push("   POST\u5b8c\u4e86\uff08no-cors\uff09");
+              log.push("   2\u79d2\u5f85\u6a5f\u3057\u3066\u691c\u8a3c...");
               return new Promise(function(resolve) { setTimeout(resolve, 2000); });
             })
             .then(function() {
-              return fetch(settings.gasUrl + "?action=read&_t=" + Date.now(), { redirect: "follow" });
+              return fetch(gasUrl + "?action=read&_t=" + Date.now(), { redirect: "follow" });
             })
             .then(function(r) { return r.text(); })
             .then(function(text) {
-              log.push("   検証GET: " + text.substring(0, 200));
+              log.push("   \u691c\u8a3cGET: " + text.substring(0, 200));
               var hasTest = text.indexOf("9999") !== -1;
               log.push("");
-              log.push(hasTest ? "✅ POST成功：スプレッドシートにデータ書き込み確認" : "❌ POST失敗：データが書き込まれていません");
-
-              if (!hasTest) {
-                log.push("");
-                log.push("3. GET書き込みフォールバックテスト...");
-                var encoded = encodeURIComponent(JSON.stringify({ words: { "9998": { id: 9998, phrase: "fallback", meaning: "フォールバック" } }, settings: defaultSettings }));
-                return fetch(settings.gasUrl + "?action=write&ts=" + Date.now() + "&data=" + encoded + "&_t=" + Date.now(), { redirect: "follow" })
-                  .then(function(r) { return r.text(); })
-                  .then(function(text2) {
-                    log.push("   GET write response: " + text2.substring(0, 200));
-                    var hasWrite = text2.indexOf("ok") !== -1;
-                    log.push(hasWrite ? "✅ GETフォールバック成功" : "❌ GETフォールバックも失敗");
-                    alert(log.join("\n"));
-                  });
-              }
+              log.push(hasTest ? "\u2705 POST\u6210\u529f" : "\u274c POST\u5931\u6557");
               alert(log.join("\n"));
             })
             .catch(function(err) {
-              log.push("❌ エラー: " + err.message);
+              log.push("\u274c \u30a8\u30e9\u30fc: " + err.message);
               alert(log.join("\n"));
             });
         } }, "\u63a5\u7d9a\u30c6\u30b9\u30c8\uff08\u8a3a\u65ad\uff09")
