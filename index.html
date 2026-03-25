@@ -159,6 +159,47 @@ function pushCloud(url, state) {
   });
 }
 
+// ========================================
+// pushCloudLite: verify GETなしの軽量版（ページ離脱時用）
+// ページが閉じられる直前など、verify GETを待てない状況で使用。
+// POST送信のみ行い、結果は確認しない（fire-and-forget）。
+// ========================================
+function pushCloudLite(url, stateData) {
+  if (!url) return;
+  var ts = Date.now();
+  var requestId = "lite_" + ts + "_" + Math.random().toString(36).substr(2, 9);
+  console.log("[pushCloudLite] fire-and-forget POST. id=" + requestId);
+
+  // ローカルタイムスタンプを先行設定（通常版と同じ）
+  try {
+    localStorage.setItem(STORAGE_KEY + "-ts", String(ts));
+  } catch(e) {}
+
+  var payload = JSON.stringify({
+    timestamp: ts,
+    data: stateData,
+    requestId: requestId
+  });
+
+  try {
+    // keepalive: true でページ閉じ後も送信を試みる
+    // ただし64KBを超えるペイロードではkeepaliveが失敗するため、
+    // その場合は通常のfetch（keepaliveなし）にフォールバック
+    var useKeepalive = payload.length < 63000;
+    fetch(url, {
+      method: "POST",
+      mode: "no-cors",
+      keepalive: useKeepalive,
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: payload
+    }).catch(function(err) {
+      console.error("[pushCloudLite] fetch error: " + err.message);
+    });
+  } catch(e) {
+    console.error("[pushCloudLite] exception: " + e.message);
+  }
+}
+
 const btnStyles = {
   wrong: { bg: "#FEE2E2", color: "#991B1B", border: "#FECACA" },
   unsure: { bg: "#FEF3C7", color: "#92400E", border: "#FDE68A" },
@@ -336,6 +377,65 @@ function App() {
       clearInterval(pollId); 
     };
   }, [getGasUrl(settings), showSyncDialog]);
+
+  // ========================================
+  // 復習完了時の即時クラウド同期
+  // 3秒デバウンスを待たず、復習セッション終了と同時にpushCloudを実行。
+  // これにより「復習完了→即アプリ閉じ」のケースでもクラウドに反映される。
+  // ========================================
+  useEffect(function() {
+    if (!reviewDone) return; // 復習完了時のみ発火
+    var _gasUrl = getGasUrl(settings);
+    if (!_gasUrl) return;
+    if (!initialSyncDone.current) return;
+
+    console.log("[REVIEW DONE SYNC] 復習完了検知。即時pushCloud実行...");
+    setSyncStatus("syncing");
+    pushCloud(_gasUrl, state).then(function() {
+      console.log("[REVIEW DONE SYNC] 同期成功");
+      setSyncStatus("synced");
+      setTimeout(function() { setSyncStatus(""); }, 2000);
+    }).catch(function(err) {
+      console.error("[REVIEW DONE SYNC] 同期失敗: " + err.message);
+      // 失敗しても3秒デバウンスが後続で再試行するので致命的ではない
+      setSyncStatus("offline");
+    });
+  }, [reviewDone]);
+
+  // ========================================
+  // ページ離脱時の緊急同期（visibilitychange + beforeunload）
+  // 復習途中でアプリを閉じた場合の安全網。
+  // visibilitychange: モバイルで最も信頼性が高い（Safari含む）
+  // beforeunload: デスクトップブラウザのタブ閉じ対策
+  // ========================================
+  useEffect(function() {
+    var _gasUrl = getGasUrl(settings);
+    if (!_gasUrl) return;
+    if (!initialSyncDone.current) return;
+
+    // stateRef: イベントハンドラ内でクロージャが古いstateを参照する問題を回避
+    // （このuseEffectはstate変更のたびにリスナーを付け替えるので不要だが、念のため）
+
+    function handleVisibilityChange() {
+      if (document.visibilityState === "hidden") {
+        console.log("[VISIBILITY] hidden検知。pushCloudLite実行...");
+        pushCloudLite(_gasUrl, { words: state.words, settings: state.settings });
+      }
+    }
+
+    function handleBeforeUnload() {
+      console.log("[BEFOREUNLOAD] ページ離脱検知。pushCloudLite実行...");
+      pushCloudLite(_gasUrl, { words: state.words, settings: state.settings });
+    }
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    window.addEventListener("beforeunload", handleBeforeUnload);
+
+    return function() {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      window.removeEventListener("beforeunload", handleBeforeUnload);
+    };
+  }, [state, getGasUrl(settings)]);
 
   var getTodayReviews = useCallback(function() {
     var t = today();
