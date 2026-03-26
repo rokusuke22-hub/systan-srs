@@ -79,6 +79,14 @@ function getLocalTs() {
   return Number(localStorage.getItem(STORAGE_KEY + "-ts") || 0);
 }
 
+// ========================================
+// _cloudDirty: stateが変更されてから未pushならtrue
+// pushCloudLiteはdirty=trueの場合のみ送信する。
+// データ未変更でのvisibilitychange発火による無駄な
+// POST（タイムスタンプだけ更新→偽ダイアログ）を防止。
+// ========================================
+var _cloudDirty = false;
+
 function fetchCloud(url) {
   var requestId = "fetch_" + Date.now() + "_" + Math.random().toString(36).substr(2, 9);
   console.log("[fetchCloud] id=" + requestId + ", url=" + url.substring(0, 60) + "...");
@@ -166,6 +174,7 @@ function pushCloud(url, state) {
 // ========================================
 function pushCloudLite(url, stateData) {
   if (!url) return;
+  if (!_cloudDirty) { console.log("[pushCloudLite] skipped (no pending changes)"); return; }
   var ts = Date.now();
   var requestId = "lite_" + ts + "_" + Math.random().toString(36).substr(2, 9);
   console.log("[pushCloudLite] fire-and-forget POST. id=" + requestId);
@@ -289,6 +298,7 @@ function App() {
       skipNextPush.current = false; 
       return; 
     }
+    _cloudDirty = true;
     if (syncPushTimer.current) clearTimeout(syncPushTimer.current);
     console.log("[BG PUSH] state変更検知。3秒後に同期判定...");
     syncPushTimer.current = setTimeout(function() {
@@ -306,6 +316,7 @@ function App() {
         }
         console.log("[BG PUSH] ローカルが新しい（または同期）。pushCloud実行");
         return pushCloud(getGasUrl(settings), state).then(function() {
+          _cloudDirty = false;
           setSyncStatus("synced");
           setTimeout(function() { setSyncStatus(""); }, 2000);
         });
@@ -393,6 +404,7 @@ function App() {
     setSyncStatus("syncing");
     pushCloud(_gasUrl, state).then(function() {
       console.log("[REVIEW DONE SYNC] 同期成功");
+      _cloudDirty = false;
       setSyncStatus("synced");
       setTimeout(function() { setSyncStatus(""); }, 2000);
     }).catch(function(err) {
@@ -564,6 +576,7 @@ function App() {
           e("div", { style: { fontSize: 13, color: "#6B6B6B", marginBottom: 20, lineHeight: 1.6 } }, "\u30af\u30e9\u30a6\u30c9\u306e\u30c7\u30fc\u30bf\u3092\u53d6\u308a\u8fbc\u307f\u307e\u3059\u304b\uff1f"),
           e("button", { style: Object.assign({}, S.bigBtn, S.primaryBtn, { marginBottom: 8 }), onClick: function() {
             if (pendingCloudData) {
+              _cloudDirty = false;
               skipNextPush.current = true;
               var cloudData = pendingCloudData.data || {};
               var mergedState = {
