@@ -147,7 +147,7 @@ function pushCloud(url, state) {
     if (d.status === "ok" && d.timestamp >= ts) {
       // ★BUG修正: GASが生成したタイムスタンプでローカルを上書き
       // これがないとGAS側tsとローカルtsがズレて偽の「更新があります」が出る
-      localStorage.setItem(STORAGE_KEY + "-ts", String(d.timestamp));
+      localStorage.setItem(STORAGE_KEY+"-ts", String(Math.max(d.timestamp, getLocalTs())));
       console.log("[pushCloud SUCCESS] クラウド同期完了。local.tsをcloud.tsに同期: " + d.timestamp);
       return d;
     }
