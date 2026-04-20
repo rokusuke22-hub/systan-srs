@@ -23,12 +23,14 @@
 <script>
 const { useState, useEffect, useCallback, useRef } = React;
 
+var TEMPLATE_VERSION = "v2.1";
+
 const STORAGE_KEY = "systan-srs-v1";
 const today = () => new Date().toISOString().split("T")[0];
 const addDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x.toISOString().split("T")[0]; };
 const daysBetween = (a, b) => Math.round((new Date(b) - new Date(a)) / 86400000);
 
-function sm2(word, quality) {
+function sm2(word, quality, graduationDays) {
   const t = today();
   const base = Object.assign({}, word, { lastReviewDate: t, lastQuality: quality });
   if (quality === "wrong") {
@@ -44,7 +46,7 @@ function sm2(word, quality) {
   else iv = Math.round((word.interval || 1) * word.easeFactor);
   if (quality === "easy") iv = Math.round(iv * 1.3);
   const ef = quality === "easy" ? word.easeFactor + 0.15 : word.easeFactor;
-  return Object.assign(base, { repetitions: word.repetitions + 1, interval: iv, easeFactor: ef, nextReviewDate: addDays(t, iv), graduated: iv >= 30 });
+  return Object.assign(base, { repetitions: word.repetitions + 1, interval: iv, easeFactor: ef, nextReviewDate: addDays(t, iv), graduated: iv >= (graduationDays || 30) });
 }
 
 function makeWord(id, phrase, meaning) {
@@ -449,6 +451,26 @@ function App() {
     };
   }, [state, getGasUrl(settings)]);
 
+  // ========================================
+  // Migration: graduationDays setting change retroactive fix
+  // interval >= graduationDays but graduated=false words are
+  // retroactively set to graduated=true on app load.
+  // ========================================
+  useEffect(function(){
+    var gd=settings.graduationDays||30;
+    var need=Object.values(words).some(function(w){return !w.graduated&&w.interval>=gd;});
+    if(!need)return;
+    setState(function(p){
+      var nw=Object.assign({},p.words);
+      Object.keys(nw).forEach(function(id){
+        if(!nw[id].graduated&&nw[id].interval>=gd){
+          nw[id]=Object.assign({},nw[id],{graduated:true});
+        }
+      });
+      return Object.assign({},p,{words:nw});
+    });
+  },[words,settings.graduationDays]);
+
   var getTodayReviews = useCallback(function() {
     var t = today();
     var due = Object.values(words).filter(function(w) { return !w.graduated && w.nextReviewDate <= t; }).sort(function(a, b) {
@@ -481,7 +503,7 @@ function App() {
   function handleJudge(quality) {
     var current = reviewQueue[reviewIndex];
     if (!current) return;
-    var updated = sm2(words[current.id], quality);
+    var updated = sm2(words[current.id], quality, settings.graduationDays);
     if (isRedoMode && quality !== "wrong") {
       setState(function(prev) { var w = Object.assign({}, prev.words); w[current.id] = Object.assign({}, w[current.id], { lastQuality: quality }); return Object.assign({}, prev, { words: w }); });
     } else {
@@ -600,7 +622,8 @@ function App() {
           } }, "\u3044\u3044\u3048\uff08\u3053\u306e\u7aef\u672b\u306e\u30c7\u30fc\u30bf\u3092\u4f7f\u3046\uff09")
         )
       ),
-      e("div", { style: { padding: "20px 0 16px", textAlign: "center" } },
+      e("div", { style: { padding: "20px 0 16px", textAlign: "center", position: "relative" } },
+        e("div", { style: { position: "absolute", top: 4, right: 0, fontSize: 10, color: "#999" } }, TEMPLATE_VERSION),
         e("div", { style: { fontSize: 11, fontWeight: 600, letterSpacing: 2, color: "#999", textTransform: "uppercase" } }, "\u30b7\u30b9\u5358 SRS"),
         e("div", { style: { fontSize: 13, color: "#6B6B6B", marginTop: 4 } }, today()),
         syncLabel && e("div", { style: { fontSize: 11, color: syncColor, marginTop: 4 } }, syncLabel)
